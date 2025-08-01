@@ -1,0 +1,6 @@
+/.vscode
+/target
+/.trunk
+*.bin
+/.cache
+/scripts/particle-api/*
