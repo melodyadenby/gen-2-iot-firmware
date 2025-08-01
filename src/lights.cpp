@@ -37,6 +37,10 @@ void setLightBreathingBlue()
 {
     setLightBreathColor(LED_MIN_BRIGHT, LED_BRIGHT, 0x00, 0x00, 0xff);
 }
+void setLightPurple()
+{
+    setLight(0xff, 0x00, 0xff);
+}
 
 void turnOffLight()
 {

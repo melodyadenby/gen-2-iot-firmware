@@ -1,0 +1,448 @@
+#include "mqtt.h"
+#include "Arduino.h"
+#include "Particle.h"
+#include "config.h"
+#include "credentials.h"
+#include "fixes/json_compat.h"
+#include "lights.h"
+#include "logging.h"
+#include "port_state.h"
+#include "utils.h"
+#include <ArduinoJson.h>
+
+// Global MQTT variables
+char MQTT_CLIENT_ID[45];
+char MQTT_PUB_TOPIC[256];
+char MQTT_SUB_TOPIC[256];
+char MANUAL_MODE[14];
+bool BROKER_CONNECTED = false;
+
+// MQTT Retry Logic Variables
+unsigned long mqtt_disconnected_timer = 0;
+bool mqtt_disconnect_noted = false;
+const unsigned long MQTT_DISCONNECTED_TIMEOUT =
+    MQTT_DISCONNECTED_TIMEOUT_SEC * SEC_TO_MS_MULTIPLIER;
+const unsigned long RETRY_INTERVAL_MS = SEC_TO_MS_MULTIPLIER;
+unsigned long currentRetryInterval = RETRY_INTERVAL_MS;
+const unsigned long MAX_RETRY_INTERVAL_MS = 15 * SEC_TO_MS_MULTIPLIER;
+unsigned long lastRetryTime = 0;
+unsigned long lastConnected = 0;
+unsigned long last_mqtt_send = 0;
+int MQTT_FAIL_COUNT = 0;
+unsigned long lastHeartbeatRetryTime = 0;
+
+// MQTT Topics
+char *topic_base = "/hub/";
+char *SUB_BASE = "/cmd";
+char *PUB_BASE = "/msg";
+
+// MQTT Client
+MQTT client(MQTT_URL, MQTT_PORT, MQTT_MAX_PACKET_SIZE, KEEP_ALIVE,
+            mqtt_callback);
+
+void initializeMQTT()
+{
+  // Initialize MQTT state
+  memset(MQTT_CLIENT_ID, 0, sizeof(MQTT_CLIENT_ID));
+  memset(MQTT_PUB_TOPIC, 0, sizeof(MQTT_PUB_TOPIC));
+  memset(MQTT_SUB_TOPIC, 0, sizeof(MQTT_SUB_TOPIC));
+  memset(MANUAL_MODE, 0, sizeof(MANUAL_MODE));
+
+  BROKER_CONNECTED = false;
+  mqtt_disconnect_noted = false;
+  resetRetryLogic();
+
+  Serial.println("MQTT initialized");
+}
+
+void handleMQTTClientLoop()
+{
+  BROKER_CONNECTED = client.isConnected();
+  checkMQTTStat();
+}
+
+void checkMQTTStat()
+{
+  if (!areCredentialsValid())
+  {
+    // Don't attempt reconnection until credentials are fetched
+    return;
+  }
+
+  if (BROKER_CONNECTED)
+  {
+    resetRetryLogic();
+    return;
+  }
+
+  unsigned long current_time = millis();
+  // MQTT is disconnected
+  if (!mqtt_disconnect_noted)
+  {
+    mqtt_disconnected_timer = millis();
+    mqtt_disconnect_noted = true;
+  }
+
+  // Attempt reconnection after timeout
+  if (current_time - mqtt_disconnected_timer >= MQTT_DISCONNECTED_TIMEOUT)
+  {
+    attemptReconnect();
+  }
+}
+
+void attemptReconnect()
+{
+  unsigned long currentMillis = millis();
+
+  Serial.printlnf("Time since last attempt: %lu ms\n", currentMillis - lastRetryTime);
+  Serial.printlnf("Current retry interval: %lu ms\n", currentRetryInterval);
+
+  if (currentMillis - lastRetryTime >= currentRetryInterval)
+  {
+    Serial.println("Attempting to reconnect MQTT...");
+    if (connect_mqtt())
+    {
+      Serial.println("Reconnected to MQTT broker.");
+      resetRetryLogic();
+    }
+    else
+    {
+      Serial.println("Reconnect attempt failed.");
+      lastRetryTime = currentMillis; // Update last retry time on attempt
+      increaseRetryInterval();
+    }
+  }
+}
+
+void resetRetryLogic()
+{
+  mqtt_disconnect_noted = false;
+  currentRetryInterval = RETRY_INTERVAL_MS; // Reset to initial retry interval
+  lastRetryTime = millis();                 // Reset the timer to current time
+}
+
+void increaseRetryInterval()
+{
+  currentRetryInterval *= 2; // Exponential backoff
+  if (currentRetryInterval > MAX_RETRY_INTERVAL_MS)
+  {
+    currentRetryInterval = MAX_RETRY_INTERVAL_MS;
+  }
+}
+
+void build_topics(const char *base)
+{
+  if (MANUAL_MODE[0] != '\0')
+  {
+    snprintf(MQTT_PUB_TOPIC, sizeof(MQTT_PUB_TOPIC), "%s%s%s", topic_base,
+             MANUAL_MODE, PUB_BASE);
+    snprintf(MQTT_SUB_TOPIC, sizeof(MQTT_SUB_TOPIC), "%s%s%s", topic_base,
+             MANUAL_MODE, SUB_BASE);
+  }
+  else
+  {
+    snprintf(MQTT_PUB_TOPIC, sizeof(MQTT_PUB_TOPIC), "%s%s%s", topic_base, base,
+             PUB_BASE);
+    snprintf(MQTT_SUB_TOPIC, sizeof(MQTT_SUB_TOPIC), "%s%s%s", topic_base, base,
+             SUB_BASE);
+  }
+
+  Serial.printlnf("Pub Topic: %s\n", MQTT_PUB_TOPIC);
+  Serial.printlnf("Sub Topic: %s\n", MQTT_SUB_TOPIC);
+}
+
+bool connect_mqtt() { return connect_broker(); }
+
+bool connect_broker()
+{
+  if (client.isConnected())
+  {
+    Serial.println("Already connected to MQTT broker.");
+    return true; // If already connected, don't attempt to reconnect
+  }
+
+  if (!Particle.connected())
+  {
+    Serial.println("Internet not connected. Cannot connect to MQTT.");
+    return false;
+  }
+
+  if (!areCredentialsValid())
+  {
+    Serial.println("No valid credentials for MQTT connection.");
+    return false;
+  }
+
+  Serial.println("Connecting to MQTT broker...");
+  bool res = client.connect(MQTT_CLIENT_ID, MQTT_USR, MQTT_PWD, MQTT_PUB_TOPIC,
+                            MQTT::QOS1, 5, "A,0,0", true);
+
+  Serial.printlnf("MQTT Connection Status: %s\n", res ? "Connected" : "Failed");
+
+  if (res)
+  {
+    if (lastConnected == 0 || lastConnected >= KEEP_ALIVE * 1000)
+    {
+      sub_topic_and_alert();
+    }
+    lastConnected = millis();
+  }
+  else
+  {
+    Serial.println("MQTT connection failed");
+  }
+
+  BROKER_CONNECTED = res;
+  return res;
+}
+
+void sub_topic_and_alert()
+{
+  Serial.println("PUBLISHING A,0,1");
+  int res = client.publish(MQTT_PUB_TOPIC, "A,0,1");
+  Serial.printlnf("sub_topic_and_alert: MQTT PUB STAT: %d\n", res);
+
+  if (!res)
+  {
+    Serial.println("FAILED TO PUBLISH");
+    return;
+  }
+
+  res = client.subscribe(MQTT_SUB_TOPIC);
+  Serial.printlnf("sub_topic_and_alert: MQTT SUB STAT: %d\n", res);
+
+  if (!res)
+  {
+    Serial.println("FAILED TO SUBSCRIBE");
+    return;
+  }
+}
+
+void publishCloud(String message)
+{
+  Serial.printlnf("Going to publish cloud: %s\n", message.c_str());
+
+  if (!BROKER_CONNECTED)
+  {
+    Serial.println("MQTT not connected, cannot publish");
+    return;
+  }
+
+  bool res = client.publish(MQTT_PUB_TOPIC, message);
+  Serial.printlnf("publishCloud result: %s\n", res ? "success" : "failed");
+
+  if (res)
+  {
+    last_mqtt_send = millis(); // Update the last successful send time
+    MQTT_FAIL_COUNT = 0;       // Reset failure count after success
+  }
+  else
+  {
+    MQTT_FAIL_COUNT++;
+    lastHeartbeatRetryTime = millis(); // Store last failed attempt time
+    Serial.printlnf("MQTT publish failed, fail count: %d\n", MQTT_FAIL_COUNT);
+  }
+}
+
+void mqtt_callback(char *topic, byte *payload, unsigned int length)
+{
+  char p[length + 1];
+  memcpy(p, payload, length);
+  p[length] = '\0';
+
+  Serial.printlnf("MQTT message received: %s\n", p);
+
+  // Parse the message by comma delimiter
+  char *token;
+  char *rest = p;
+  char *tokens[4] = {NULL}; // Store up to 4 tokens (cmd, variant, port, btn)
+  int i = 0;
+
+  // Split the string by commas
+  while ((token = strtok_r(rest, ",", &rest)) && i < 4)
+  {
+    tokens[i++] = token;
+  }
+
+  // Extract command from first token
+  char cmd = tokens[0] ? tokens[0][0] : '\0';
+
+  // Extract variant from second token if available
+  char variant = tokens[1] ? tokens[1][0] : '\0';
+
+  // Extract port from third token if available
+  int port = 0;
+  if (tokens[2])
+  {
+    port = atoi(tokens[2]);
+    Serial.printlnf("Parsed port number: %d\n", port);
+  }
+
+  // Extract button state from fourth token if available
+  char btn = tokens[3] ? (tokens[3][0] == '0' ? '1' : '0') : '2';
+
+  // Process commands
+  processMQTTCommand(cmd, variant, port, btn, tokens);
+}
+
+void processMQTTCommand(char cmd, char variant, int port, char btn,
+                        char *tokens[])
+{
+  struct PortState *portState = getPortState(port);
+
+  switch (cmd)
+  {
+  case 'C': // Charge command
+    if (isValidPort(port) && portState)
+    {
+      portState->check_charge_status = true;
+      portState->charge_varient = variant;
+      portState->send_charge_flag = true;
+      portState->awaiting_cloud_vin_resp = false;
+      Serial.printlnf("Charge command for port %d, variant %c\n", port, variant);
+    }
+    else
+    {
+      Serial.printlnf("Invalid port for charge command: %d\n", port);
+    }
+    break;
+
+  case 'U': // Unlock command
+    if (isValidPort(port) && portState)
+    {
+      portState->send_unlock_flag = true;
+      Serial.printlnf("Unlock command for port %d\n", port);
+    }
+    else
+    {
+      Serial.printlnf("Invalid port for unlock command: %d\n", port);
+    }
+    break;
+
+  case 'H': // Heartbeat command
+    switch (variant)
+    {
+    case '0':
+      if (tokens[3] && tokens[3][0] == '0')
+      {
+        // IoT heartbeat
+        publishCloud("H,0,1");
+        Serial.println("IoT heartbeat response sent");
+      }
+      else
+      {
+        // Port heartbeat
+        if (isValidPort(port) && portState)
+        {
+          portState->send_port_heartbeat = true;
+          Serial.printlnf("Port heartbeat command for port %d\n", port);
+        }
+        else
+        {
+          Serial.printlnf("Invalid port for heartbeat: %d\n", port);
+        }
+      }
+      break;
+    default:
+      Serial.printlnf("Unknown heartbeat variant: %c\n", variant);
+      break;
+    }
+    break;
+
+  case 'V': // Version command
+    switch (variant)
+    {
+    case '0':
+      send_iot_build_version_flag = true;
+      Serial.println("IoT version request");
+      break;
+    case '1':
+      if (isValidPort(port) && portState)
+      {
+        portState->send_port_build_version_flag = true;
+        Serial.printlnf("Port version request for port %d\n", port);
+      }
+      else
+      {
+        Serial.printlnf("Invalid port for version request: %d\n", port);
+      }
+      break;
+    default:
+      Serial.printlnf("Unknown version variant: %c\n", variant);
+      break;
+    }
+    break;
+
+  case 'T': // Temperature request
+    if (isValidPort(port) && portState)
+    {
+      portState->send_temp_req_flag = true;
+      Serial.printlnf("Temperature request for port %d\n", port);
+    }
+    else
+    {
+      Serial.printlnf("Invalid port for temperature request: %d\n", port);
+    }
+    break;
+
+  case 'E': // Emergency exit
+    if (isValidPort(port) && portState)
+    {
+      portState->emergency_exit_flag = true;
+      Serial.printlnf("Emergency exit for port %d\n", port);
+    }
+    else
+    {
+      Serial.printlnf("Invalid port for emergency exit: %d\n", port);
+    }
+    break;
+
+  default:
+    Serial.printlnf("Unknown MQTT command: %c\n", cmd);
+    break;
+  }
+}
+
+bool isMQTTConnected() { return BROKER_CONNECTED && client.isConnected(); }
+
+String getMQTTStatus()
+{
+  if (isMQTTConnected())
+  {
+    return "Connected";
+  }
+  else if (!areCredentialsValid())
+  {
+    return "Waiting for credentials";
+  }
+  else if (!Particle.connected())
+  {
+    return "No internet connection";
+  }
+  else
+  {
+    return "Disconnected - Retrying";
+  }
+}
+
+unsigned long getLastMQTTSend() { return last_mqtt_send; }
+
+int getMQTTFailCount() { return MQTT_FAIL_COUNT; }
+
+void resetMQTTFailCount() { MQTT_FAIL_COUNT = 0; }
+
+bool shouldRetryMQTT()
+{
+  if (isMQTTConnected())
+  {
+    return false;
+  }
+
+  if (!areCredentialsValid() || !Particle.connected())
+  {
+    return false;
+  }
+
+  unsigned long currentTime = millis();
+  return (currentTime - lastRetryTime) >= currentRetryInterval;
+}

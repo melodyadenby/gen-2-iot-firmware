@@ -14,6 +14,7 @@
 void setLightRed();
 void setLightGreen();
 void setLightBlue();
+void setLightPurple();
 void turnOffLight();
 void blinkCANError();
 void blinkIdentityError();
