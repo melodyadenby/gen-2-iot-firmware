@@ -50,8 +50,10 @@ bool watchdog_enabled = false;
 const int CAN_ERROR_THRESHOLD = 5;            // Max consecutive errors before recovery
 const unsigned long CAN_ERROR_WINDOW = 10000; // 10 seconds error window
 const unsigned long CAN_RECOVERY_DELAY =
-    5000;                            // 5 seconds between recovery attempts
-const int MAX_RECOVERY_ATTEMPTS = 3; // Max recovery attempts before reset
+    5000;                             // 5 seconds between recovery attempts
+const int MAX_RECOVERY_ATTEMPTS = 10; // Max recovery attempts before reset
+const unsigned long RECOVERY_SUCCESS_RESET_TIME =
+    300000; // 5 minutes of success resets recovery count
 
 // CAN Error Monitor Structure
 struct CANErrorMonitor
@@ -59,11 +61,14 @@ struct CANErrorMonitor
   int consecutiveErrors;
   unsigned long lastErrorTime;
   unsigned long totalErrors;
+  int recoveryAttempts;
   bool inRecoveryMode;
   unsigned long lastRecoveryAttempt;
-  int recoveryAttempts;
   unsigned long lastSuccessTime;
-} canErrorMonitor = {0, 0, 0, false, 0, 0, 0};
+  unsigned long lastSuccessfulRecovery;
+  bool adaptiveMode;
+  unsigned long extendedRecoveryDelay;
+} canErrorMonitor = {0, 0, 0, 0, false, 0, 0, 0, false, 0};
 
 can_frame messageQueue[50];
 
@@ -308,11 +313,21 @@ void handlePortDataRequests()
   // Check if we should re-enable polling after errors cleared
   if (pollingDisabled)
   {
+    unsigned long waitTime = 5000; // Default 5 seconds
+
+    // Extended wait time in adaptive mode
+    if (canErrorMonitor.adaptiveMode &&
+        canErrorMonitor.extendedRecoveryDelay > 5000)
+    {
+      waitTime = canErrorMonitor.extendedRecoveryDelay;
+    }
+
     if (canErrorMonitor.consecutiveErrors == 0 &&
-        millis() - pollingDisabledTime >
-            5000)
-    { // Wait 5 seconds after errors clear
-      Serial.printlnf("Re-enabling port polling - errors have cleared");
+        millis() - pollingDisabledTime > waitTime)
+    {
+      Serial.printlnf(
+          "Re-enabling port polling - errors have cleared (waited %lu ms)",
+          waitTime);
       pollingDisabled = false;
       // Reset all port failure counts
       for (int i = 0; i <= MAX_PORTS; i++)
@@ -752,21 +767,48 @@ void performCANRecovery()
   canErrorMonitor.inRecoveryMode = true;
   canErrorMonitor.lastRecoveryAttempt = millis();
 
-  // Check if we've exceeded max recovery attempts
+  // Check if we've exceeded max recovery attempts without recent success
   if (canErrorMonitor.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS)
   {
-    Serial.printlnf(
-        "CRITICAL: Max recovery attempts (%d) exceeded - forcing device reset",
-        MAX_RECOVERY_ATTEMPTS);
-    delay(100);
-    resetDevice("Max CAN recovery attempts exceeded");
-    return;
+    unsigned long timeSinceLastSuccess =
+        millis() - canErrorMonitor.lastSuccessfulRecovery;
+
+    // If it's been a long time since last successful recovery, allow reset of
+    // attempts
+    if (timeSinceLastSuccess > RECOVERY_SUCCESS_RESET_TIME)
+    {
+      Serial.printlnf("Resetting recovery attempts - %lu ms since last success",
+                      timeSinceLastSuccess);
+      canErrorMonitor.recoveryAttempts = 1; // Reset but count this attempt
+      canErrorMonitor.adaptiveMode = true;  // Enable adaptive recovery
+    }
+    else
+    {
+      Serial.printlnf("CRITICAL: Max recovery attempts (%d) exceeded - forcing "
+                      "device reset",
+                      MAX_RECOVERY_ATTEMPTS);
+      delay(100);
+      resetDevice("Max CAN recovery attempts exceeded");
+      return;
+    }
   }
 
   Serial.printlnf("CAN Recovery attempt %d of %d",
                   canErrorMonitor.recoveryAttempts, MAX_RECOVERY_ATTEMPTS);
 
-  delay(500); // Give system time to stabilize
+  // Adaptive recovery delay based on attempt number
+  unsigned long recoveryDelay = 500;
+  if (canErrorMonitor.adaptiveMode)
+  {
+    recoveryDelay =
+        1000 + (canErrorMonitor.recoveryAttempts * 500); // Progressive delay
+    canErrorMonitor.extendedRecoveryDelay =
+        recoveryDelay * 2; // Extended pause after recovery
+    Serial.printlnf("Adaptive recovery mode - using %lu ms delay",
+                    recoveryDelay);
+  }
+
+  delay(recoveryDelay); // Give system time to stabilize
 
   // Reset MCP2515 controller
   Serial.printlnf("Resetting MCP2515 controller...");
@@ -810,14 +852,23 @@ void performCANRecovery()
   canErrorMonitor.consecutiveErrors = 0;
   canErrorMonitor.inRecoveryMode = false;
   canErrorMonitor.lastSuccessTime = millis();
+  canErrorMonitor.lastSuccessfulRecovery = millis();
   CAN_ERROR = false;
 
   Serial.printlnf("=== CAN RECOVERY COMPLETED SUCCESSFULLY ===");
   Serial.printlnf("Recovery attempt %d succeeded",
                   canErrorMonitor.recoveryAttempts);
 
-  // Wait before resuming normal operations
-  delay(1000);
+  // Extended pause in adaptive mode for system stabilization
+  unsigned long postRecoveryDelay = 1000;
+  if (canErrorMonitor.adaptiveMode &&
+      canErrorMonitor.extendedRecoveryDelay > 1000)
+  {
+    postRecoveryDelay = canErrorMonitor.extendedRecoveryDelay;
+    Serial.printlnf("Extended post-recovery delay: %lu ms", postRecoveryDelay);
+  }
+
+  delay(postRecoveryDelay);
 }
 
 void logCANError(int errorCode, const char *operation)
@@ -882,11 +933,23 @@ void resetCANSuccessCounter()
   // Update success time
   canErrorMonitor.lastSuccessTime = millis();
 
-  // Reset recovery attempts after successful operation
+  // Reset recovery attempts after sustained successful operation
   if (canErrorMonitor.recoveryAttempts > 0)
   {
-    Serial.printlnf("Resetting recovery attempt counter after success");
-    canErrorMonitor.recoveryAttempts = 0;
+    unsigned long timeSinceRecovery =
+        millis() - canErrorMonitor.lastRecoveryAttempt;
+
+    // Only reset attempts if we've had sustained success (30 seconds)
+    if (timeSinceRecovery > 30000)
+    {
+      Serial.printlnf(
+          "Resetting recovery attempt counter after sustained success (%lu ms)",
+          timeSinceRecovery);
+      canErrorMonitor.recoveryAttempts = 0;
+      canErrorMonitor.adaptiveMode =
+          false; // Disable adaptive mode on sustained success
+      canErrorMonitor.extendedRecoveryDelay = 0;
+    }
   }
 
   // Only clear recovery mode if we're not currently in an active recovery
