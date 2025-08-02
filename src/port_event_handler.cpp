@@ -77,22 +77,39 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message)
     markPortPolled(port);
   }
 
-  // Handle VIN request logic - clear VIN buffer when starting new sequence
-  if (message.status.tagValid && message.status.docked &&
-      !state->vin_request_flag)
+  // Clear VIN if vehicle is no longer docked (handles undocking without unlock)
+  if (!message.status.docked && strlen(state->VIN) > 0)
   {
-    // Clear any existing VIN data when starting new sequence
+    Serial.printlnf("Port %d - Vehicle undocked, clearing VIN (%s)", port,
+                    state->VIN);
     memset(state->VIN, 0, sizeof(state->VIN));
+    state->vin_request_flag = false;
+    state->send_vin_to_cloud_flag = false;
+    state->awaiting_cloud_vin_resp = false;
+    state->cloud_vin_resp_timer = 0;
+  }
+
+  // Handle VIN request logic - only start if we don't already have a VIN for
+  // this session
+  if (message.status.tagValid && message.status.docked &&
+      !state->vin_request_flag && strlen(state->VIN) == 0)
+  {
+    // Only start VIN sequence if we don't already have a VIN
     state->vin_request_flag = true;
     state->send_vin_request_timer = millis();
-    Serial.printlnf("Port %d - Starting new VIN sequence, buffer cleared",
-                    port);
+    Serial.printlnf("Port %d - Starting new VIN sequence", port);
   }
 
   // Handle charging logic
   if (message.status.charging)
   {
     state->charging = true;
+    // Set charge_successful when port reports charging = '1'
+    if (state->check_charge_status)
+    {
+      state->charge_successful = true;
+      Serial.printlnf("Port %d - Charging detected via status message", port);
+    }
   }
 
   // Handle vehicle secured state
@@ -334,9 +351,11 @@ void PortEventHandler::resetPortAfterUnlock(int port)
     state->DID_PORT_CHECK = false;
     state->vin_request_flag = false;
 
-    // Clear VIN and charge variant
+    // Clear VIN and charge variant only on unlock (vehicle leaving)
     memset(state->VIN, 0, sizeof(state->VIN));
     state->charge_varient = '\0';
+    Serial.printlnf("Port %d - VIN cleared after unlock (vehicle leaving)",
+                    port);
   }
 }
 

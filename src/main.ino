@@ -34,8 +34,6 @@ volatile int queueTail = 0;
 
 unsigned long last_port_check_reset =
     0; // Tracks the last time DID_PORT_CHECK was reset
-const unsigned long port_check_interval = 10 * SEC_TO_MS_MULTIPLIER;
-
 // CAN Error monitoring and recovery
 volatile int can_error_count = 0;
 volatile unsigned long last_can_error_time = 0;
