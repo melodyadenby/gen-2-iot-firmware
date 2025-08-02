@@ -6,6 +6,7 @@
 #include "credentials.h"
 #include "fixes/json_compat.h"
 #include "lights.h"
+#include "logging.h"
 #include "main.h"
 #include "mqtt.h"
 #include "port_event_handler.h"
@@ -72,9 +73,26 @@ struct CANErrorMonitor
 
 can_frame messageQueue[50];
 
+// Global hardware watchdog object
+ApplicationWatchdog *hardwareWatchdog;
+
+// Hardware watchdog handler
+void hardwareWatchdogHandler()
+{
+  // Do minimal work here - just reset the system
+  // Don't use Serial.print, Particle.publish, etc.
+  System.reset(RESET_NO_WAIT);
+}
+
 void setup()
 {
   initializeSystem();
+
+  // Initialize hardware watchdog early - 60 second timeout
+  hardwareWatchdog =
+      new ApplicationWatchdog(60000, hardwareWatchdogHandler, 1536);
+  Serial.printlnf("Hardware ApplicationWatchdog initialized (60s timeout)");
+
   initializeArchitecture();
   initializeHardware();
 
@@ -118,7 +136,8 @@ void loop()
   handleSystemLoop();
   checkWatchdog();
   checkCANHealth();
-  feedWatchdog(); // Feed watchdog at end of successful loop iteration
+  feedWatchdog();                 // Feed watchdog at end of successful loop iteration
+  ApplicationWatchdog::checkin(); // Feed hardware watchdog
 
   // Small delay to prevent CPU overload during error conditions
   if (CAN_ERROR || can_recovery_needed)
@@ -345,15 +364,7 @@ void handlePortDataRequests()
   unsigned long current_time = millis();
   if (current_time - last_port_check_reset >= PORT_CHECK_INTERVAL)
   {
-    Serial.println("TIME TO GET PORT DATA");
-    for (int port = 1; port <= MAX_PORTS; port++)
-    {
-      PortState *state = getPortState(port);
-      if (state)
-      {
-        state->DID_PORT_CHECK = false;
-      }
-    }
+    markPortsUnpolled();
     last_port_check_reset = current_time; // Update the last reset time
     Serial.println("DID_PORT_CHECK reset for all ports.");
   }
@@ -493,6 +504,9 @@ void canThread()
       // Small delay to prevent busy-waiting
       delay(10);
     }
+
+    // Feed hardware watchdog during port request thread
+    ApplicationWatchdog::checkin();
   }
 }
 
@@ -513,6 +527,9 @@ void port_request_thread()
       // Small delay to prevent busy-waiting
       delay(10);
     }
+
+    // Feed hardware watchdog during CAN thread
+    ApplicationWatchdog::checkin();
   }
 }
 
@@ -741,6 +758,9 @@ void canMonitorThread()
           can_error_count);
       can_recovery_needed = true;
     }
+
+    // Feed hardware watchdog during monitoring
+    ApplicationWatchdog::checkin();
 
     delay(1000); // Check every second
   }
@@ -1196,7 +1216,7 @@ void canHealthMonitorThread()
         Serial.printlnf("CRITICAL: Excessive CAN errors (%d), forcing reset",
                         canErrorMonitor.consecutiveErrors);
         delay(100);
-        System.reset();
+        emergencyReset("Excessive CAN errors");
       }
 
       // Check for queue overflow conditions
@@ -1229,6 +1249,9 @@ void canHealthMonitorThread()
       lastHealthCheck = currentTime;
     }
 
-    delay(500); // Run this thread every 500ms
+    // Feed hardware watchdog during health monitoring
+    ApplicationWatchdog::checkin();
+
+    delay(1000); // Check every second
   }
 }

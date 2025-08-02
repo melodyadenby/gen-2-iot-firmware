@@ -90,5 +90,6 @@ void setPortCurrent(int portNumber, const char *current);
 void setPortFirmwareVersion(int portNumber, const char *version);
 void markPortPolled(int portNumber);
 void clearPortFlags(int portNumber);
+void markPortsUnpolled();
 
 #endif // PORT_STATE_H

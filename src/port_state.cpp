@@ -13,9 +13,11 @@ bool send_signal_flag = false;
 bool send_heartbeat_flag = false;
 bool send_iot_build_version_flag = false;
 
-void initializePorts() {
+void initializePorts()
+{
   // Initialize all ports to default state
-  for (int i = 1; i < MAX_PORTS; i++) {
+  for (int i = 1; i < MAX_PORTS; i++)
+  {
     resetPortState(i);
   }
 
@@ -30,9 +32,23 @@ void initializePorts() {
 
   Serial.printlnf("Initialized %d ports\n", MAX_PORTS);
 }
+void markPortsUnpolled()
+{
+  Serial.println("TIME TO GET PORT DATA");
+  for (int port = 1; port <= MAX_PORTS; port++)
+  {
+    PortState *state = &ports[port];
+    if (state)
+    {
+      state->DID_PORT_CHECK = false;
+    }
+  }
+}
 
-void resetPortState(int portNumber) {
-  if (!isValidPort(portNumber)) {
+void resetPortState(int portNumber)
+{
+  if (!isValidPort(portNumber))
+  {
     Serial.printlnf("resetPortState Invalid port number: %d\n", portNumber);
     return;
   }
@@ -85,8 +101,10 @@ void resetPortState(int portNumber) {
   memset(port->port_firmware_version, 0, sizeof(port->port_firmware_version));
 }
 
-void updatePortState(int portNumber, const struct PortState *newState) {
-  if (!isValidPort(portNumber) || newState == NULL) {
+void updatePortState(int portNumber, const struct PortState *newState)
+{
+  if (!isValidPort(portNumber) || newState == NULL)
+  {
     Serial.printlnf("Invalid port number or null state: %d\n", portNumber);
     return;
   }
@@ -100,8 +118,10 @@ void updatePortState(int portNumber, const struct PortState *newState) {
   Serial.printlnf("Updated port %d state\n", portNumber);
 }
 
-struct PortState *getPortState(int portNumber) {
-  if (!isValidPort(portNumber)) {
+struct PortState *getPortState(int portNumber)
+{
+  if (!isValidPort(portNumber))
+  {
     Serial.printlnf("getPortState Invalid port number: %d\n", portNumber);
     return NULL;
   }
@@ -110,76 +130,95 @@ struct PortState *getPortState(int portNumber) {
   return &ports[index];
 }
 
-bool isValidPort(int portNumber) {
+bool isValidPort(int portNumber)
+{
   return (portNumber >= 1 && portNumber <= MAX_PORTS);
 }
 
-void setCurrentPort(int portNumber) {
-  if (isValidPort(portNumber)) {
+void setCurrentPort(int portNumber)
+{
+  if (isValidPort(portNumber))
+  {
     CURRENT_PORT = portNumber;
     Serial.printlnf("Current port set to: %d\n", CURRENT_PORT);
-  } else {
+  }
+  else
+  {
     Serial.printlnf("Invalid port number for current port: %d\n", portNumber);
   }
 }
 
 int getCurrentPort() { return CURRENT_PORT; }
 
-bool isPortDocked(int portNumber) {
+bool isPortDocked(int portNumber)
+{
   struct PortState *port = getPortState(portNumber);
   return port ? port->docked : false;
 }
 
-bool isPortCharging(int portNumber) {
+bool isPortCharging(int portNumber)
+{
   struct PortState *port = getPortState(portNumber);
   return port ? port->charging : false;
 }
 
-bool isPortSecured(int portNumber) {
+bool isPortSecured(int portNumber)
+{
   struct PortState *port = getPortState(portNumber);
   return port ? port->vehicle_secured : false;
 }
 
-void setPortVIN(int portNumber, const char *vin) {
+void setPortVIN(int portNumber, const char *vin)
+{
   struct PortState *port = getPortState(portNumber);
-  if (port && vin) {
+  if (port && vin)
+  {
     safeStrCopy(port->VIN, vin, sizeof(port->VIN));
     Serial.printlnf("Port %d VIN set to: %s\n", portNumber, port->VIN);
   }
 }
 
-const char *getPortVIN(int portNumber) {
+const char *getPortVIN(int portNumber)
+{
   struct PortState *port = getPortState(portNumber);
   return port ? port->VIN : "";
 }
 
-void setPortTemperature(int portNumber, const char *temperature) {
+void setPortTemperature(int portNumber, const char *temperature)
+{
   struct PortState *port = getPortState(portNumber);
-  if (port && temperature) {
+  if (port && temperature)
+  {
     safeStrCopy(port->temp, temperature, sizeof(port->temp));
     Serial.printlnf("Port %d temperature set to: %s\n", portNumber, port->temp);
   }
 }
 
-void setPortVoltage(int portNumber, const char *voltage) {
+void setPortVoltage(int portNumber, const char *voltage)
+{
   struct PortState *port = getPortState(portNumber);
-  if (port && voltage) {
+  if (port && voltage)
+  {
     safeStrCopy(port->volts, voltage, sizeof(port->volts));
     Serial.printlnf("Port %d voltage set to: %s\n", portNumber, port->volts);
   }
 }
 
-void setPortCurrent(int portNumber, const char *current) {
+void setPortCurrent(int portNumber, const char *current)
+{
   struct PortState *port = getPortState(portNumber);
-  if (port && current) {
+  if (port && current)
+  {
     safeStrCopy(port->amps, current, sizeof(port->amps));
     Serial.printlnf("Port %d current set to: %s\n", portNumber, port->amps);
   }
 }
 
-void setPortFirmwareVersion(int portNumber, const char *version) {
+void setPortFirmwareVersion(int portNumber, const char *version)
+{
   struct PortState *port = getPortState(portNumber);
-  if (port && version) {
+  if (port && version)
+  {
     safeStrCopy(port->port_firmware_version, version,
                 sizeof(port->port_firmware_version));
     Serial.printlnf("Port %d firmware version set to: %s\n", portNumber,
@@ -187,20 +226,24 @@ void setPortFirmwareVersion(int portNumber, const char *version) {
   }
 }
 
-String getPortStatusSummary(int portNumber) {
+String getPortStatusSummary(int portNumber)
+{
   struct PortState *port = getPortState(portNumber);
-  if (!port) {
+  if (!port)
+  {
     return "Invalid port";
   }
 
   String status = "Port " + String(portNumber) + ": ";
   status += port->docked ? "Docked" : "Empty";
 
-  if (port->docked) {
+  if (port->docked)
+  {
     status += port->charging ? ", Charging" : ", Not Charging";
     status += port->vehicle_secured ? ", Secured" : ", Unsecured";
 
-    if (strlen(port->VIN) > 0) {
+    if (strlen(port->VIN) > 0)
+    {
       status += ", VIN: " + String(port->VIN);
     }
   }
@@ -208,29 +251,35 @@ String getPortStatusSummary(int portNumber) {
   return status;
 }
 
-unsigned long getPortLastPollTime(int portNumber) {
+unsigned long getPortLastPollTime(int portNumber)
+{
   struct PortState *port = getPortState(portNumber);
   return port ? port->last_poll_time : 0;
 }
 
-void markPortPolled(int portNumber) {
+void markPortPolled(int portNumber)
+{
   struct PortState *port = getPortState(portNumber);
-  if (port) {
+  if (port)
+  {
     port->last_poll_time = millis();
     port->DID_PORT_CHECK = true;
   }
-  if (isPortStatusRequestPending()) {
+  if (isPortStatusRequestPending())
+  {
     sendPortStatus();
     clearPortStatusRequest();
   }
 }
 
-bool hasPortBeenPolled(int portNumber) {
+bool hasPortBeenPolled(int portNumber)
+{
   struct PortState *port = getPortState(portNumber);
   return port ? port->DID_PORT_CHECK : false;
 }
 
-void clearPortFlags(int portNumber) {
+void clearPortFlags(int portNumber)
+{
   struct PortState *port = getPortState(portNumber);
   if (!port)
     return;
@@ -254,11 +303,13 @@ void clearPortFlags(int portNumber) {
   Serial.printlnf("Cleared flags for port %d\n", portNumber);
 }
 
-char *getPortStatusRange(int startPort, int endPort) {
+char *getPortStatusRange(int startPort, int endPort)
+{
   static char buffer[256]; // Static buffer to return
   memset(buffer, 0, sizeof(buffer));
 
-  if (startPort < 1 || endPort > MAX_PORTS || startPort > endPort) {
+  if (startPort < 1 || endPort > MAX_PORTS || startPort > endPort)
+  {
     Serial.printlnf("Invalid port range: %d-%d", startPort, endPort);
     snprintf(buffer, sizeof(buffer), "P,0,ERROR");
     return buffer;
@@ -267,23 +318,30 @@ char *getPortStatusRange(int startPort, int endPort) {
   // Start building the response: P,0,status1,status2,status3,...
   strcpy(buffer, "P,0");
 
-  for (int port = startPort; port <= endPort; port++) {
+  for (int port = startPort; port <= endPort; port++)
+  {
     struct PortState *portState = getPortState(port);
     char portStatus[8];
 
-    if (portState) {
+    if (portState)
+    {
       // Format: just the status value (1=docked, 0=empty)
       snprintf(portStatus, sizeof(portStatus), ",%d",
                portState->docked ? 1 : 0);
-    } else {
+    }
+    else
+    {
       // Invalid port - use 0
       snprintf(portStatus, sizeof(portStatus), ",0");
     }
 
     // Check if adding this would exceed buffer size
-    if (strlen(buffer) + strlen(portStatus) < sizeof(buffer) - 1) {
+    if (strlen(buffer) + strlen(portStatus) < sizeof(buffer) - 1)
+    {
       strcat(buffer, portStatus);
-    } else {
+    }
+    else
+    {
       Serial.println("Port status buffer overflow prevented");
       break;
     }

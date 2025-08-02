@@ -133,9 +133,10 @@ void PortFlagHandler::handleChargeCommand(int port)
   // Convert single char to string
   char variantStr[2] = {state->charge_varient, '\0'};
 
-  if (sendPortCommand(port, 'C', variantStr, PORT_CHECK_INTERVAL + 5000) ==
+  if (sendPortCommand(port, 'C', variantStr, 10 * SEC_TO_MS_MULTIPLIER) ==
       ERROR_OK)
   {
+    markPortsUnpolled();
     state->send_charge_flag = false;
     state->check_charge_status = true;
   }
