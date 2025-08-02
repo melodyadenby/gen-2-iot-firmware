@@ -371,7 +371,6 @@ void handlePortDataRequests()
 
   static int current_poll_port = 1;
   static unsigned long last_poll_send_time = 0;
-  const unsigned long POLL_STAGGER_DELAY = 300; // 1s between requests
 
   // Check if enough time has passed since last poll
   if (current_time - last_poll_send_time < POLL_STAGGER_DELAY)
