@@ -5,13 +5,6 @@
 // Most configuration is handled via preprocessor defines in config.h
 // This file contains any runtime configuration management if needed
 
-// Initialize any runtime configuration here
-void initializeConfig()
-{
-  // Configuration is mostly compile-time via defines
-  // Add any runtime configuration initialization here if needed
-}
-
 // Get current environment as string for debugging
 const char *getCurrentEnvironment()
 {

@@ -50,8 +50,6 @@ const int SEC_TO_MS_MULTIPLIER = 1000;
 #define WATCHDOG_TIMEOUT_MS 60000
 
 // Configuration Functions
-void initializeConfig();
 const char *getCurrentEnvironment();
-bool validateConfiguration();
 
 #endif // CONFIG_H
