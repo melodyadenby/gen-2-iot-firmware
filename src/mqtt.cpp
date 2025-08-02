@@ -235,17 +235,6 @@ void publishCloud(String message)
   bool res = client.publish(MQTT_PUB_TOPIC, message);
   Serial.printlnf("publishCloud result: %s\n", res ? "success" : "failed");
 
-  if (!res)
-  {
-    Serial.printlnf("MQTT publish failed - topic: %s, message: %s\n",
-                    MQTT_PUB_TOPIC, message.c_str());
-  }
-  else
-  {
-    Serial.printlnf("MQTT publish successful - topic: %s, message: %s\n",
-                    MQTT_PUB_TOPIC, message.c_str());
-  }
-
   if (res)
   {
     last_mqtt_send = millis(); // Update the last successful send time
@@ -265,9 +254,7 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length)
   memcpy(p, payload, length);
   p[length] = '\0';
 
-  Serial.printlnf("MQTT message received on topic '%s': %s\n", topic, p);
-  Serial.printlnf("Our subscribe topic: %s\n", MQTT_SUB_TOPIC);
-  Serial.printlnf("Our publish topic: %s\n", MQTT_PUB_TOPIC);
+  Serial.printlnf("MQTT message received on topic '%s': %s", topic, p);
 
   // Parse the message by comma delimiter
   char *token;
@@ -313,7 +300,7 @@ void processMQTTCommand(char cmd, char variant, int port, char btn,
     if (isValidPort(port) && portState)
     {
       portState->check_charge_status = true;
-      portState->charge_varient = variant;
+      portState->charge_varient = '2'; // variant;
       portState->send_charge_flag = true;
       portState->awaiting_cloud_vin_resp = false;
       Serial.printlnf("Charge command for port %d, variant %c\n", port,
@@ -363,6 +350,63 @@ void processMQTTCommand(char cmd, char variant, int port, char btn,
       break;
     default:
       Serial.printlnf("Unknown heartbeat variant: %c\n", variant);
+      break;
+    }
+    break;
+  case 'K': // K_VIN Validation command
+    switch (variant)
+    {
+    case '0':
+    {
+      Serial.printlnf("Emergency Exit flag enabled for port: %d", port);
+      if (port >= 1 && port <= MAX_PORTS)
+      {
+        portState->emergency_exit_flag = true;
+      }
+      else
+      {
+        Serial.println("Invalid port number for emergency exit (VIN Invalid)");
+      }
+      break;
+    }
+    case '1':
+    {
+      Serial.println("VIN Validated, charging allowed");
+      portState->check_charge_status = true;
+      portState->charge_varient = '2'; // variant;
+      portState->send_charge_flag = true;
+      portState->awaiting_cloud_vin_resp = false;
+      // Serial.println("Printing each character with index:");
+      // for (int i = 0; i < strlen(p); i++)
+      // {
+      //   Serial.printf("p[%d]: %c", i, p[i]);
+      //   Serial.println("");
+      // }
+      // char volts[3]; // Buffer for voltage with space for null terminator
+      // char amps[3];  // Buffer for amperage with space for null terminator
+
+      // // Assuming 'p' is a properly null-terminated string coming as input
+      // volts[0] = p[8];
+      // volts[1] = p[9];
+      // volts[2] = '\0'; // Null-terminate the string
+
+      // amps[0] = p[11];
+      // amps[1] = p[12];
+      // amps[2] = '\0'; // Null-terminate the string
+
+      // Serial.printf("Volts: %s, Amps: %s", volts, amps);
+      // Serial.println();
+
+      // portState[port].button_state = btn;
+      // portState[port].send_button_state_flag = true;
+
+      // strcpy(portState[port].volts, volts);
+      // strcpy(portState[port].amps, amps);
+      // portState[port].send_charging_params_flag = true;
+      break;
+    }
+    default:
+      Serial.printlnf("Unknown K_VIN variant: %c\n", variant);
       break;
     }
     break;

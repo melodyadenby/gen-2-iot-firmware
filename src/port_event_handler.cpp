@@ -9,8 +9,10 @@
 PortEventHandler::PortEventHandler(PortStateManager *manager)
     : portStateManager(manager) {}
 
-void PortEventHandler::handleCANMessage(const ParsedCANMessage &message) {
-  if (!isValidPortNumber(message.sourcePort)) {
+void PortEventHandler::handleCANMessage(const ParsedCANMessage &message)
+{
+  if (!isValidPortNumber(message.sourcePort))
+  {
     Serial.printlnf("Invalid port number in CAN message: %d",
                     message.sourcePort);
     return;
@@ -18,7 +20,8 @@ void PortEventHandler::handleCANMessage(const ParsedCANMessage &message) {
 
   logMessageProcessing(message);
 
-  switch (message.messageType) {
+  switch (message.messageType)
+  {
   case CAN_MSG_STATUS:
     handleStatusMessage(message);
     break;
@@ -58,12 +61,14 @@ void PortEventHandler::handleCANMessage(const ParsedCANMessage &message) {
   }
 }
 
-void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
+void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message)
+{
   int port = message.sourcePort;
 
   // Update port state based on status message
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     state->docked = message.status.docked;
     state->charging = message.status.charging;
     state->vehicle_secured = message.status.vehicleSecured;
@@ -74,7 +79,8 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
 
   // Handle VIN request logic - clear VIN buffer when starting new sequence
   if (message.status.tagValid && message.status.docked &&
-      !state->vin_request_flag) {
+      !state->vin_request_flag)
+  {
     // Clear any existing VIN data when starting new sequence
     memset(state->VIN, 0, sizeof(state->VIN));
     state->vin_request_flag = true;
@@ -84,17 +90,20 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
   }
 
   // Handle charging logic
-  if (message.status.charging) {
+  if (message.status.charging)
+  {
     state->charging = true;
   }
 
   // Handle vehicle secured state
-  if (message.status.vehicleSecured) {
+  if (message.status.vehicleSecured)
+  {
     state->vehicle_secured = true;
   }
 
   // Handle fatal NFC errors
-  if (message.status.fatalNFCError) {
+  if (message.status.fatalNFCError)
+  {
     Serial.printlnf("FATAL NFC ERROR on port %d", port);
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "NFC_ERROR,%d", port);
@@ -102,15 +111,18 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
   }
 }
 
-void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
+void PortEventHandler::handleVINMessage(const ParsedCANMessage &message)
+{
   int port = message.sourcePort;
   PortState *state = getPortState(port);
-  if (!state) {
+  if (!state)
+  {
     return;
   }
 
   // If this is the first chunk of a new VIN sequence, clear the buffer
-  if (strlen(state->VIN) == 0) {
+  if (strlen(state->VIN) == 0)
+  {
     Serial.printlnf("Port %d - Starting VIN collection", port);
   }
 
@@ -130,18 +142,22 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
                   chunkLen, availableSpace);
 
   // Only append if there's space in the VIN buffer
-  if (chunkLen <= availableSpace) {
+  if (chunkLen <= availableSpace)
+  {
     strcat(state->VIN, message.vinData.vin);
     Serial.printlnf("Port %d - Concatenation successful", port);
-  } else {
+  }
+  else
+  {
     Serial.printlnf("Port %d - WARNING: Not enough space for chunk!", port);
   }
 
   Serial.printlnf("Port %d - VIN after concatenation: '%s' (len=%d)", port,
                   state->VIN, strlen(state->VIN));
 
-  // Check if VIN is complete (17 characters for full VIN)
-  if (strlen(state->VIN) >= 17) {
+  // Check if VIN is complete (16 characters for full VIN)
+  if (strlen(state->VIN) >= VIN_LENGTH)
+  {
     Serial.printlnf("Port %d - COMPLETE VIN: %s", port, state->VIN);
     Serial.printlnf("Port %d - Setting flags for cloud transmission", port);
 
@@ -149,29 +165,31 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
     state->send_vin_to_cloud_flag = true;
     state->awaiting_cloud_vin_resp = true;
     state->cloud_vin_resp_timer = millis();
-
-    // Trigger cloud VIN validation for complete VIN
-    handleVINValidation(port, state->VIN);
-  } else {
+  }
+  else
+  {
     Serial.printlnf("Port %d - PARTIAL VIN: %s (%d/%d chars)", port, state->VIN,
-                    strlen(state->VIN), 17);
+                    strlen(state->VIN), VIN_LENGTH);
   }
   Serial.printlnf("=== END VIN DEBUG ===");
 }
 
 void PortEventHandler::handleTemperatureMessage(
-    const ParsedCANMessage &message) {
+    const ParsedCANMessage &message)
+{
   int port = message.sourcePort;
 
   // Update temperature data
   setPortTemperature(port, message.tempData.temperature);
 
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     state->send_temp_req_flag = false;
 
     // Copy fan speed if available
-    if (strlen(message.tempData.fanSpeed) > 0) {
+    if (strlen(message.tempData.fanSpeed) > 0)
+    {
       strncpy(state->fan_speed, message.tempData.fanSpeed,
               sizeof(state->fan_speed) - 1);
       state->fan_speed[sizeof(state->fan_speed) - 1] = '\0';
@@ -188,14 +206,16 @@ void PortEventHandler::handleTemperatureMessage(
   publishStatusToCloud(port, buffer);
 }
 
-void PortEventHandler::handleFirmwareMessage(const ParsedCANMessage &message) {
+void PortEventHandler::handleFirmwareMessage(const ParsedCANMessage &message)
+{
   int port = message.sourcePort;
 
   // Update firmware version
   setPortFirmwareVersion(port, message.firmwareData.version);
 
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     state->send_port_build_version_flag = false;
   }
 
@@ -209,11 +229,13 @@ void PortEventHandler::handleFirmwareMessage(const ParsedCANMessage &message) {
   publishStatusToCloud(port, buffer);
 }
 
-void PortEventHandler::handleHeartbeatMessage(const ParsedCANMessage &message) {
+void PortEventHandler::handleHeartbeatMessage(const ParsedCANMessage &message)
+{
   int port = message.sourcePort;
 
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     state->heartbeat_success = true;
     state->send_port_heartbeat = false;
     state->check_heartbeat_status = true;
@@ -222,30 +244,38 @@ void PortEventHandler::handleHeartbeatMessage(const ParsedCANMessage &message) {
   Serial.printlnf("Heartbeat response from port %d", port);
 }
 
-void PortEventHandler::handleUnlockMessage(const ParsedCANMessage &message) {
+void PortEventHandler::handleUnlockMessage(const ParsedCANMessage &message)
+{
   int port = message.sourcePort;
 
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     state->unlock_successful = true;
     state->send_unlock_flag = false;
+    state->emergency_exit_flag = false;
     state->check_unlock_status = true;
   }
 
   Serial.printlnf("Unlock response from port %d", port);
 }
 
-void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
+void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message)
+{
   int port = message.sourcePort;
 
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     // Validate charge variant matches what we sent
-    if (message.chargeData.variant == state->charge_varient) {
+    if (message.chargeData.variant == state->charge_varient)
+    {
       state->charge_successful = true;
       Serial.printlnf("Charge success on port %d, variant: %c", port,
                       message.chargeData.variant);
-    } else {
+    }
+    else
+    {
       Serial.printlnf(
           "Charge variant mismatch on port %d. Expected: %c, Got: %c", port,
           state->charge_varient, message.chargeData.variant);
@@ -257,13 +287,15 @@ void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
 }
 
 void PortEventHandler::handleForceEjectMessage(
-    const ParsedCANMessage &message) {
+    const ParsedCANMessage &message)
+{
   int port = message.sourcePort;
 
   Serial.printlnf("FORCE EJECT INITIATED on port %d", port);
 
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     state->emergency_exit_flag = true;
     state->send_unlock_flag = true;
   }
@@ -274,10 +306,14 @@ void PortEventHandler::handleForceEjectMessage(
   publishStatusToCloud(port, buffer);
 }
 
-void PortEventHandler::publishStatusToCloud(int port, const char *status) {
-  if (isMQTTConnected()) {
+void PortEventHandler::publishStatusToCloud(int port, const char *status)
+{
+  if (isMQTTConnected())
+  {
     publishCloud(String(status));
-  } else {
+  }
+  else
+  {
     // Fallback to Particle cloud
     char eventName[32];
     snprintf(eventName, sizeof(eventName), "port_%d_status", port);
@@ -285,26 +321,11 @@ void PortEventHandler::publishStatusToCloud(int port, const char *status) {
   }
 }
 
-void PortEventHandler::handleVINValidation(int port, const char *vin) {
-  // Only validate complete VINs (17 characters)
-  if (strlen(vin) < 17) {
-    Serial.printlnf("VIN too short for validation: %s (%d chars)", vin,
-                    strlen(vin));
-    return;
-  }
-
-  // Prepare VIN for cloud validation
-  char vinMessage[64];
-  snprintf(vinMessage, sizeof(vinMessage), "VIN_VALIDATE,%d,%s", port, vin);
-
-  publishStatusToCloud(port, vinMessage);
-
-  Serial.printlnf("VIN validation request sent for port %d: %s", port, vin);
-}
-
-void PortEventHandler::resetPortAfterUnlock(int port) {
+void PortEventHandler::resetPortAfterUnlock(int port)
+{
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     state->check_unlock_status = false;
     state->emergency_exit_flag = false;
     state->unlock_successful = false;
@@ -319,9 +340,11 @@ void PortEventHandler::resetPortAfterUnlock(int port) {
   }
 }
 
-void PortEventHandler::resetPortAfterCharge(int port) {
+void PortEventHandler::resetPortAfterCharge(int port)
+{
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     state->check_charge_status = false;
     state->charge_successful = false;
     state->DID_PORT_CHECK = false;
@@ -329,7 +352,8 @@ void PortEventHandler::resetPortAfterCharge(int port) {
   }
 }
 
-void PortEventHandler::handleCommandTimeout(int port, const char *commandType) {
+void PortEventHandler::handleCommandTimeout(int port, const char *commandType)
+{
   Serial.printlnf("Command timeout on port %d for command: %s", port,
                   commandType);
 
@@ -340,33 +364,42 @@ void PortEventHandler::handleCommandTimeout(int port, const char *commandType) {
 
   // Reset relevant flags
   PortState *state = getPortState(port);
-  if (state) {
+  if (state)
+  {
     state->DID_PORT_CHECK = false;
 
-    if (strcmp(commandType, "unlock") == 0) {
+    if (strcmp(commandType, "unlock") == 0)
+    {
       state->check_unlock_status = false;
-    } else if (strcmp(commandType, "charge") == 0) {
+    }
+    else if (strcmp(commandType, "charge") == 0)
+    {
       state->check_charge_status = false;
       state->charge_varient = '\0';
-    } else if (strcmp(commandType, "heartbeat") == 0) {
+    }
+    else if (strcmp(commandType, "heartbeat") == 0)
+    {
       state->check_heartbeat_status = false;
     }
   }
 }
 
-void PortEventHandler::logMessageProcessing(const ParsedCANMessage &message) {
+void PortEventHandler::logMessageProcessing(const ParsedCANMessage &message)
+{
   Serial.printlnf("Processing %s message from port %d",
                   canProcessor.getMessageTypeString(message.messageType),
                   message.sourcePort);
 }
 
-bool PortEventHandler::isValidPortNumber(int port) {
+bool PortEventHandler::isValidPortNumber(int port)
+{
   return (port >= 1 && port <= MAX_PORTS);
 }
 
 void PortEventHandler::formatCloudMessage(const char *command,
                                           const char *variant, int port,
                                           const char *success, char *buffer,
-                                          size_t bufferSize) {
+                                          size_t bufferSize)
+{
   snprintf(buffer, bufferSize, "%s,%s,%d,%s", command, variant, port, success);
 }

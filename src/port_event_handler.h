@@ -13,7 +13,8 @@ class PortStateManager;
  * Handles business logic for port events triggered by CAN messages
  * Separates CAN message parsing from port state management
  */
-class PortEventHandler {
+class PortEventHandler
+{
 private:
   PortStateManager *portStateManager;
 
@@ -84,13 +85,6 @@ public:
    * @param status Status message to publish
    */
   void publishStatusToCloud(int port, const char *status);
-
-  /**
-   * Handle VIN validation with cloud
-   * @param port Port number
-   * @param vin VIN string to validate
-   */
-  void handleVINValidation(int port, const char *vin);
 
   /**
    * Reset port state after successful unlock

@@ -1,100 +1,232 @@
-# gen-2
+# IoT Firmware Reorganization
 
-This firmware project was created using [Particle Developer Tools](https://www.particle.io/developer-tools/) and is compatible with all [Particle Devices](https://www.particle.io/devices/).
+This document describes the reorganization of the Gen 2 IoT firmware codebase to improve maintainability, testability, and code clarity.
 
-Feel free to replace this README.md file with your own content, or keep it for reference.
+## Overview
 
-## Table of Contents
-- [Introduction](#introduction)
-- [Prerequisites To Use This Template](#prerequisites-to-use-this-repository)
-- [Getting Started](#getting-started)
-- [Particle Firmware At A Glance](#particle-firmware-at-a-glance)
-  - [Logging](#logging)
-  - [Setup and Loop](#setup-and-loop)
-  - [Delays and Timing](#delays-and-timing)
-  - [Testing and Debugging](#testing-and-debugging)
-  - [GitHub Actions (CI/CD)](#github-actions-cicd)
-  - [OTA](#ota)
-- [Support and Feedback](#support-and-feedback)
-- [Version](#version)
+The original codebase had all functionality mixed together in `main.h` and `main.ino`, making it difficult to maintain and test. The reorganization separates everything into focused modules.
 
-## Introduction
+## New File Structure
 
-For an in-depth understanding of this project template, please refer to our [documentation](https://docs.particle.io/firmware/best-practices/firmware-template/).
+### Core System Files
 
-## Prerequisites To Use This Repository
+- **`main.h`** - Core system declarations and includes
+- **`main.ino`** - Main system orchestration and setup/loop functions
 
-To use this software/firmware on a device, you'll need:
+### Configuration Management
 
-- A [Particle Device](https://www.particle.io/devices/).
-- Windows/Mac/Linux for building the software and flashing it to a device.
-- [Particle Development Tools](https://docs.particle.io/getting-started/developer-tools/developer-tools/) installed and set up on your computer.
-- Optionally, a nice cup of tea (and perhaps a biscuit).
+- **`config.h`** - All configuration constants, environment settings, build parameters
+- **`config.cpp`** - Configuration validation and utility functions
 
-## Getting Started
+### MQTT Communication
 
-1. While not essential, we recommend running the [device setup process](https://setup.particle.io/) on your Particle device first. This ensures your device's firmware is up-to-date and you have a solid baseline to start from.
+- **`mqtt.h`** - MQTT connection, topics, retry logic declarations
+- **`mqtt.cpp`** - Complete MQTT implementation including connection management, message handling, and command processing
 
-2. If you haven't already, open this project in Visual Studio Code (File -> Open Folder). Then [compile and flash](https://docs.particle.io/getting-started/developer-tools/workbench/#cloud-build-and-flash) your device. Ensure your device's USB port is connected to your computer.
+### Credential Management
 
-3. Verify the device's operation by monitoring its logging output:
-    - In Visual Studio Code with the Particle Plugin, open the [command palette](https://docs.particle.io/getting-started/developer-tools/workbench/#particle-commands) and choose "Particle: Serial Monitor".
-    - Or, using the Particle CLI, execute:
-    ```
-    particle serial monitor --follow
-    ```
+- **`credentials.h`** - Credential structures and management functions
+- **`credentials.cpp`** - Credential fetching, validation, and state management
 
-4. Uncomment the code at the bottom of the cpp file in your src directory to publish to the Particle Cloud! Login to console.particle.io to view your devices events in real time.
+### Port State Management
 
-5. Customize this project! For firmware details, see [Particle firmware](https://docs.particle.io/reference/device-os/api/introduction/getting-started/). For information on the project's directory structure, visit [this link](https://docs.particle.io/firmware/best-practices/firmware-template/#project-overview).
+- **`port_state.h`** - Port state structure and management functions
+- **`port_state.cpp`** - Complete port state management including getters, setters, and utilities
 
-## Particle Firmware At A Glance
+### Hardware Interfaces (Existing)
 
-### Logging
+- **`can.h/can.cpp`** - CAN bus communication (cleaned up duplicate declarations)
+- **`lights.h/lights.cpp`** - LED/ring light control
+- **`utils.h/utils.cpp`** - Utility functions
 
-The firmware includes a [logging library](https://docs.particle.io/reference/device-os/api/logging/logger-class/). You can display messages at different levels and filter them:
+## Key Benefits
+
+### 1. **Separation of Concerns**
+
+Each module has a single, well-defined responsibility:
+
+- `config.*` - Configuration management
+- `mqtt.*` - MQTT communication
+- `credentials.*` - Authentication
+- `port_state.*` - Port management
+- `main.*` - System orchestration
+
+### 2. **Improved Maintainability**
+
+- Changes to MQTT logic to not require touching port state code
+- Configuration changes are centralized
+- Each module can be understood independently
+
+### 3. **Better Testing**
+
+- Individual modules can be tested in isolation
+- Mock implementations can be created for each interface
+- Unit tests can focus on specific functionality
+
+### 4. **Cleaner Dependencies**
+
+- Explicit includes show module relationships
+- Reduced coupling between components
+- Clear interface boundaries
+
+## Migration Guide
+
+### From Old Structure
+
+```cpp
+// Old: Everything in main.h
+#include "main.h"
+// Access everything directly
+credentialsFetched = true;
+BROKER_CONNECTED = false;
+```
+
+### To New Structure
+
+```cpp
+// New: Focused includes
+#include "credentials.h"
+#include "mqtt.h"
+
+// Use proper functions
+if (areCredentialsValid()) {
+    // ...
+}
+if (isMQTTConnected()) {
+    // ...
+}
+```
+
+## System Flow
+
+### 1. **Initialization** (`setup()`)
 
 ```
-Log.trace("This is trace message");
-Log.info("This is info message");
-Log.warn("This is warn message");
-Log.error("This is error message");
+initializeSystem()
+├── initializeConfig()
+├── initializePorts()
+├── initializeCredentials()
+└── initializeMQTT()
+
+initializeHardware()
+├── Setup lights
+├── Initialize SPI
+└── Configure CAN bus
+
+initializeParticle()
+├── Connect to cloud
+├── Register functions
+└── Log reset reason
 ```
 
-### Setup and Loop
+### 2. **Main Loop** (`loop()`)
 
-Particle projects originate from the Wiring/Processing framework, which is based on C++. Typically, one-time setup functions are placed in `setup()`, and the main application runs from the `loop()` function.
+```
+handleSystemLoop()
+├── Check for CAN errors
+├── Check credential failures
+├── Handle connection states
+├── handleMQTTClientLoop()
+├── handleCredentials()
+└── updateSystemStatus()
+```
 
-For advanced scenarios, explore our [threading support](https://docs.particle.io/firmware/software-design/threading-explainer/).
+## Configuration Management
 
-### Delays and Timing
+### Environment Configuration
 
-By default, the setup() and loop() functions are blocking whilst they run, meaning that if you put in a delay, your entire application will wait for that delay to finish before anything else can run. 
+All environment-specific settings are now centralized in `config.h`:
 
-For techniques that allow you to run multiple tasks in parallel without creating threads, checkout the code example [here](https://docs.particle.io/firmware/best-practices/firmware-template/).
+- MQTT URLs
+- Credential endpoints
+- Timeouts and retry intervals
+- Build version information
 
-(Note: Although using `delay()` isn't recommended for best practices, it's acceptable for testing.)
+### Runtime Configuration
 
-### Testing and Debugging
+Configuration validation and utility functions in `config.cpp`:
 
-For firmware testing and debugging guidance, check [this documentation](https://docs.particle.io/troubleshooting/guides/build-tools-troubleshooting/debugging-firmware-builds/).
+- `getCurrentEnvironment()` - Returns environment string
+- `getBuildInfo()` - Returns build information
 
-### GitHub Actions (CI/CD)
+## MQTT System
 
-This project provides a YAML file for GitHub, automating firmware compilation whenever changes are pushed. More details on [Particle GitHub Actions](https://docs.particle.io/firmware/best-practices/github-actions/) are available.
+### Connection Management
 
-### OTA
+- Automatic reconnection with exponential backoff
+- Connection state monitoring
+- Graceful error handling
 
-To learn how to utilize Particle's OTA service for device updates, consult [this documentation](https://docs.particle.io/getting-started/cloud/ota-updates/).
+### Command Processing
 
-Test OTA with the 'Particle: Cloud Flash' command in Visual Studio Code or the CLI command 'particle flash'!
+Structured command processing in `processMQTTCommand()`:
 
-This firmware supports binary assets in OTA packages, allowing the inclusion of audio, images, configurations, and external microcontroller firmware. More details are [here](https://docs.particle.io/reference/device-os/api/asset-ota/asset-ota/).
+- Charge commands (`C`)
+- Unlock commands (`U`)
+- Heartbeat commands (`H`)
+- Version requests (`V`)
+- Temperature requests (`T`)
+- Emergency exit (`E`)
 
-## Support and Feedback
+### Status Monitoring
 
-For support or feedback on this template or any Particle products, please join our [community](https://community.particle.io)!
+- `getMQTTStatus()` - Human-readable status
+- `isMQTTConnected()` - Connection state
+- `shouldRetryMQTT()` - Retry logic
 
-## Version
+## Credential Management
 
-Template version 1.0.2
+### Secure Handling
+
+- Structured credential storage
+- Validation functions
+- Retry logic with limits
+
+### State Management
+
+- `areCredentialsValid()` - Validation check
+- `shouldRetryCredentials()` - Retry timing
+- `getCredentialsStatus()` - Human-readable status
+
+## Port State Management
+
+### Structured Data
+
+Each port has a complete state structure with:
+
+- Connection status (docked, charging, secured)
+- Vehicle information (VIN, validation status)
+- Command flags and timeouts
+- Hardware readings (voltage, current, temperature)
+
+### Safe Operations
+
+- Port number validation
+- Safe string copying
+- State query functions
+- Bulk operations (reset, clear flags)
+
+## Error Handling
+
+### CAN Bus Errors
+
+- Structured error reporting
+- Error state management
+- Visual indicators (blinking LEDs)
+
+### System Health
+
+- Memory monitoring
+- Uptime tracking
+- Periodic health reports
+
+## Future Enhancements
+
+This reorganization enables:
+
+1. **Unit Testing** - Each module can be tested independently
+2. **Mock Hardware** - Hardware interfaces can be mocked for testing
+3. **Feature Flags** - Easy addition of feature toggles
+4. **Logging System** - Structured logging can be added
+5. **OTA Updates** - Modular structure supports partial updates
+6. **Performance Monitoring** - Easy to add metrics per module
