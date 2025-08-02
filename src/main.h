@@ -22,7 +22,6 @@ class PortFlagHandler;
 extern char can_err_msg[200];
 extern bool CAN_ERROR;
 #define CAN_QUEUE_SIZE 64            // Increased buffer size to reduce overflow chance
-#define CAN_RECOVERY_DELAY 50        // ms to delay after CAN error
 #define CAN_MAX_CONSECUTIVE_ERRORS 3 // Number of errors before controller reset
 
 // CAN message queue variables (defined in main.ino)
@@ -59,5 +58,15 @@ void initializeParticle();
 void handleCredentials();
 void updateSystemStatus();
 void logResetReason();
+
+// CAN Error Monitoring and Recovery
+void canMonitorThread();
+void performCANRecovery();
+void logCANError(int errorCode, const char *operation);
+
+// Watchdog Functions
+void enableWatchdog();
+void feedWatchdog();
+void checkWatchdog();
 
 #endif // MAIN_H

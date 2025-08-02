@@ -93,8 +93,7 @@ void PortFlagHandler::handleUnlockCommand(int port)
   {
     logFlagActivity(port, "EMERGENCY_EXIT", "Processing emergency unlock");
 
-    if (sendPortCommand(port, 'U', "0", 3 * SEC_TO_MS_MULTIPLIER) ==
-        ERROR_OK)
+    if (sendPortCommand(port, 'U', "0", 3 * SEC_TO_MS_MULTIPLIER) == ERROR_OK)
     {
       state->send_unlock_flag = false;
       state->check_unlock_status = true;
@@ -467,6 +466,7 @@ void PortFlagHandler::handleChargeFailure(int port)
     // publishToCloud(buffer);
 
     state->check_charge_status = false;
+    state->charge_successful = false;
     state->DID_PORT_CHECK = false;
     state->charge_varient = '\0';
   }
@@ -647,7 +647,12 @@ int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
     reqMsg.data[reqMsg.can_dlc++] = amps[i];
   }
 
-  return sendCanMessage(reqMsg);
+  int result = sendCanMessage(reqMsg);
+  if (result != ERROR_OK)
+  {
+    Serial.printlnf("CAN Error in portWriteParams: %d", result);
+  }
+  return result;
 }
 
 int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout)

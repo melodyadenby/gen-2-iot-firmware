@@ -4,7 +4,8 @@
 #include "mcp2515.h" // Make sure the MCP2515 class is defined
 
 #define CAN_CS A5
-extern MCP2515 mcp2515; // Declare the mcp2515 object here, without instantiating
+extern MCP2515
+    mcp2515; // Declare the mcp2515 object here, without instantiating
 
 extern uint32_t total_messages_received;
 extern uint32_t last_message_time;
