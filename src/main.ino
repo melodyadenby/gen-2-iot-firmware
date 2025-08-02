@@ -1277,6 +1277,27 @@ void checkInterruptHealth()
   }
   lastInterruptCheck = currentTime;
 
+  // Only check interrupt health when system is fully operational
+  if (!Particle.connected() || !BROKER_CONNECTED || !areCredentialsValid())
+  {
+    // System not ready - don't monitor interrupts yet
+    static bool wasReady = false;
+    if (wasReady) {
+      Serial.printlnf("Interrupt health monitoring disabled - system not fully operational");
+      wasReady = false;
+    }
+    lastInterruptTime = currentTime; // Reset timer to prevent false alarms
+    return;
+  }
+
+  // Log when monitoring becomes active
+  static bool wasReady = false;
+  if (!wasReady) {
+    Serial.printlnf("Interrupt health monitoring enabled - system fully operational");
+    wasReady = true;
+    lastInterruptTime = currentTime; // Start fresh when monitoring begins
+  }
+
   // Check if we've received interrupts recently
   unsigned long timeSinceLastInterrupt = currentTime - lastInterruptTime;
 
@@ -1346,6 +1367,29 @@ void recoverInterruptSystem()
 void checkTransmissionReceptionBalance()
 {
   unsigned long currentTime = millis();
+
+  // Only check TX/RX balance when system is fully operational
+  if (!Particle.connected() || !BROKER_CONNECTED || !areCredentialsValid())
+  {
+    // System not ready - reset timers to prevent false alarms
+    static bool txRxWasReady = false;
+    if (txRxWasReady) {
+      Serial.printlnf("TX/RX balance monitoring disabled - system not fully operational");
+      txRxWasReady = false;
+    }
+    lastTransmissionTime = currentTime;
+    lastInterruptTime = currentTime;
+    return;
+  }
+
+  // Log when TX/RX monitoring becomes active
+  static bool txRxWasReady = false;
+  if (!txRxWasReady) {
+    Serial.printlnf("TX/RX balance monitoring enabled - system fully operational");
+    txRxWasReady = true;
+    lastTransmissionTime = currentTime; // Start fresh when monitoring begins
+    lastInterruptTime = currentTime;
+  }
 
   // Check if we're actively transmitting but not receiving
   unsigned long timeSinceLastTX = currentTime - lastTransmissionTime;
