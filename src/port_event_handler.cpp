@@ -122,9 +122,9 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message)
   if (message.status.fatalNFCError)
   {
     Serial.printlnf("FATAL NFC ERROR on port %d", port);
-    char buffer[32];
-    snprintf(buffer, sizeof(buffer), "NFC_ERROR,%d", port);
-    publishStatusToCloud(port, buffer);
+    // char buffer[32];
+    // snprintf(buffer, sizeof(buffer), "NFC_ERROR,%d", port);
+    // publishStatusToCloud(port, buffer);
   }
 }
 
@@ -176,12 +176,24 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message)
   if (strlen(state->VIN) >= VIN_LENGTH)
   {
     Serial.printlnf("Port %d - COMPLETE VIN: %s", port, state->VIN);
-    Serial.printlnf("Port %d - Setting flags for cloud transmission", port);
 
     state->vin_request_flag = false;
-    state->send_vin_to_cloud_flag = true;
-    state->awaiting_cloud_vin_resp = true;
-    state->cloud_vin_resp_timer = millis();
+
+    // Only send to cloud if vehicle is not already charging (prevents cloud
+    // spam on system restart)
+    if (!state->charging)
+    {
+      Serial.printlnf("Port %d - Setting flags for cloud transmission", port);
+      state->send_vin_to_cloud_flag = true;
+      state->awaiting_cloud_vin_resp = true;
+      state->cloud_vin_resp_timer = millis();
+    }
+    else
+    {
+      Serial.printlnf("Port %d - VIN collected but skipping cloud transmission "
+                      "(already charging)",
+                      port);
+    }
   }
   else
   {
