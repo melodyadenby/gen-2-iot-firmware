@@ -36,7 +36,7 @@ void PortFlagHandler::processPortFlags(int port)
     return;
   }
 
-  logFlagActivity(port, "PROCESSING", "Starting flag processing");
+  // logFlagActivity(port, "PROCESSING", "Starting flag processing");
 
   // Process command flags in priority order
   handleEmergencyExit(port);
@@ -69,7 +69,8 @@ void PortFlagHandler::handleVINRequest(int port)
 
   logFlagActivity(port, "VIN_REQUEST", "Sending VIN request");
 
-  if (sendPortCommand(port, 'K', nullptr, 10) == ERROR_OK)
+  if (sendPortCommand(port, 'K', nullptr, 10 * SEC_TO_MS_MULTIPLIER) ==
+      ERROR_OK)
   {
     state->vin_request_flag = false;
     state->send_vin_request_timer = millis();
@@ -92,7 +93,8 @@ void PortFlagHandler::handleUnlockCommand(int port)
   {
     logFlagActivity(port, "EMERGENCY_EXIT", "Processing emergency unlock");
 
-    if (sendPortCommand(port, 'U', "0", 10) == ERROR_OK)
+    if (sendPortCommand(port, 'U', "0", 10 * SEC_TO_MS_MULTIPLIER) ==
+        ERROR_OK)
     {
       state->send_unlock_flag = false;
       state->check_unlock_status = true;
@@ -106,7 +108,8 @@ void PortFlagHandler::handleUnlockCommand(int port)
   {
     logFlagActivity(port, "UNLOCK", "Sending unlock command");
 
-    if (sendPortCommand(port, 'U', nullptr, 10) == ERROR_OK)
+    if (sendPortCommand(port, 'U', nullptr, 10 * SEC_TO_MS_MULTIPLIER) ==
+        ERROR_OK)
     {
       state->send_unlock_flag = false;
       state->check_unlock_status = true;
@@ -131,7 +134,8 @@ void PortFlagHandler::handleChargeCommand(int port)
   // Convert single char to string
   char variantStr[2] = {state->charge_varient, '\0'};
 
-  if (sendPortCommand(port, 'C', variantStr, 65) == ERROR_OK)
+  if (sendPortCommand(port, 'C', variantStr, 10 * SEC_TO_MS_MULTIPLIER) ==
+      ERROR_OK)
   {
     state->send_charge_flag = false;
     state->check_charge_status = true;
@@ -152,7 +156,8 @@ void PortFlagHandler::handleHeartbeat(int port)
 
   logFlagActivity(port, "HEARTBEAT", "Sending heartbeat");
 
-  if (sendPortCommand(port, 'H', nullptr, 5) == ERROR_OK)
+  if (sendPortCommand(port, 'H', nullptr, 5 * SEC_TO_MS_MULTIPLIER) ==
+      ERROR_OK)
   {
     state->send_port_heartbeat = false;
     state->check_heartbeat_status = true;
@@ -173,7 +178,7 @@ void PortFlagHandler::handleTemperatureRequest(int port)
 
   logFlagActivity(port, "TEMPERATURE", "Requesting temperature data");
 
-  if (sendPortCommand(port, 'T', "0", 10) == ERROR_OK)
+  if (sendPortCommand(port, 'T', "0", 10 * SEC_TO_MS_MULTIPLIER) == ERROR_OK)
   {
     state->send_temp_req_flag = false;
   }
@@ -214,7 +219,8 @@ void PortFlagHandler::handlePortVersionRequest(int port)
 
   logFlagActivity(port, "VERSION", "Requesting port version");
 
-  if (sendPortCommand(port, 'V', nullptr, 10) == ERROR_OK)
+  if (sendPortCommand(port, 'V', nullptr, 10 * SEC_TO_MS_MULTIPLIER) ==
+      ERROR_OK)
   {
     state->send_port_build_version_flag = false;
   }
@@ -285,9 +291,15 @@ void PortFlagHandler::checkCommandTimeouts(int port)
     return;
   }
 
+  // Check if timeout has expired (compare with current time)
   if (state->command_timeout > 0)
   {
-    updateCommandTimeout(port, 1);
+    unsigned long currentTime = millis();
+    if (currentTime >= state->command_timeout)
+    {
+      // Timeout expired
+      state->command_timeout = 0;
+    }
   }
 }
 
@@ -434,7 +446,7 @@ int PortFlagHandler::sendPortCommand(int port, char command,
     return -1;
   }
 
-  return portWriteNew(port, command, const_cast<char *>(variant), timeout);
+  return portWrite(port, command, const_cast<char *>(variant), timeout);
 }
 
 int PortFlagHandler::sendChargingParams(int port, const char *volts,
@@ -561,28 +573,29 @@ bool PortFlagHandler::canRetryCommand(unsigned long lastAttemptTime,
 
 void PortFlagHandler::updateCommandTimeout(int port, int decrement)
 {
-  PortState *state = getPortState(port);
-  if (state && state->command_timeout > 0)
-  {
-    state->command_timeout -= decrement;
-    if (state->command_timeout < 0)
-    {
-      state->command_timeout = 0;
-    }
-  }
+  // This function is no longer needed since we use absolute timestamps
+  // Keeping for compatibility but making it a no-op
 }
 int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
                                      int timeout)
 {
   Serial.printf("Sending charge params - volts: %s, amps: %s\n", volts, amps);
 
+  struct PortState *portState = getPortState(port);
+  if (!portState)
+  {
+    return -1;
+  }
+
+  // Set absolute timeout timestamp (current time + timeout duration)
+  portState->command_timeout = millis() + timeout;
+
   struct can_frame reqMsg;
-  ports[port].command_timeout = timeout;
+  memset(&reqMsg, 0, sizeof(reqMsg));
 
   reqMsg.can_id = port;
   reqMsg.can_dlc = 0;
 
-  // Build message: P,volts,amps
   reqMsg.data[reqMsg.can_dlc++] = 'P';
   reqMsg.data[reqMsg.can_dlc++] = ',';
 
@@ -603,54 +616,83 @@ int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
   return sendCanMessage(reqMsg);
 }
 
-int PortFlagHandler::portWriteNew(int port, char cmd, char *variant,
-                                  int timeout)
+int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout)
 {
+  struct PortState *portState = getPortState(port);
+
+  Serial.printlnf("portWriteNew: port=%d, cmd=%c", port, cmd);
 
   struct can_frame reqMsg;
   if (port < 1 || port > MAX_PORTS)
   {
     Serial.printf("Invalid port number: %d\n", port);
-    return -1;
+    return -1; // Return negative value to indicate error
   }
 
-  // Set command timeout
-  ports[port].command_timeout = timeout;
+  // Set absolute timeout timestamp (current time + timeout duration)
+  portState->command_timeout = millis() + timeout;
 
-  // Build CAN message
+  // Clear the CAN message buffer to avoid leftover data
+  memset(reqMsg.data, 0, sizeof(reqMsg.data));
+
   reqMsg.can_id = port;
-  reqMsg.can_dlc = 0;
 
-  // Add command
-  reqMsg.data[reqMsg.can_dlc++] = cmd;
+  // Build the CAN message
+  reqMsg.data[0] = (unsigned char)cmd;
+  reqMsg.data[1] = ',';
 
-  // Add comma separator
-  reqMsg.data[reqMsg.can_dlc++] = ',';
+  // Convert port to string for both single and double digit ports
+  char portStr[3];
+  snprintf(portStr, sizeof(portStr), "%d", port);
+  size_t portStrLen = strlen(portStr);
 
-  // Add variant if provided
-  if (variant && strlen(variant) > 0)
+  // Copy port number string into message (with bounds checking)
+  size_t maxPortDigits = 2; // Maximum digits in port number
+  for (size_t i = 0; i < portStrLen && i < maxPortDigits; i++)
   {
-    for (int i = 0; i < strlen(variant) && reqMsg.can_dlc < 8; i++)
-    {
-      reqMsg.data[reqMsg.can_dlc++] = variant[i];
-    }
+    reqMsg.data[2 + i] = portStr[i];
+  }
+
+  if (variant != NULL)
+  {
+    // Add comma separator after port number
+    reqMsg.data[2 + portStrLen] = ',';
+
+    // Calculate max safe length for variant
+    size_t maxVariantLen =
+        sizeof(reqMsg.data) - (3 + portStrLen) - 1; // -1 for null terminator
+
+    // Use our safe string copy function
+    safeStrCopy((char *)&reqMsg.data[3 + portStrLen], variant, maxVariantLen);
+
+    // Ensure null-termination of CAN message
+    reqMsg.data[7] = '\0';
+
+    // Set the CAN message length to 8
+    reqMsg.can_dlc = 8;
   }
   else
   {
-    reqMsg.data[reqMsg.can_dlc++] = '0';
+    // Null-pad the remaining bytes starting after port number
+    for (size_t i = 2 + portStrLen; i < 8; i++)
+    {
+      reqMsg.data[i] = '\0';
+    }
+    Serial.print("Sending to port: ");
+    Serial.println(port);
+    Serial.printf("Data: %s", reqMsg.data);
+    Serial.println();
+    // Set the CAN message length to 8
+    reqMsg.can_dlc = 8;
   }
-  Serial.printlnf("Message to send to port %d: %s", reqMsg.can_id, reqMsg.data);
-  // Send the message
+
+  // Attempt to send the message
   int result = sendCanMessage(reqMsg);
 
-  if (result == ERROR_OK)
+  // Check for send errors
+  if (result != ERROR_OK)
   {
-    Serial.printlnf("Command '%c' sent to port %d successfully", cmd, port);
-  }
-  else
-  {
-    Serial.printlnf("Failed to send command '%c' to port %d (error: %d)", cmd,
-                    port, result);
+    Serial.printlnf("CAN send error: %d when sending to port %d", result, port);
   }
 
   return result;

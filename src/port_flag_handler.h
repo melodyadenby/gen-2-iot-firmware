@@ -243,7 +243,8 @@ private:
                        unsigned long retryInterval);
 
   /**
-   * Update command timeout counter
+   * Update command timeout counter (DEPRECATED - no longer used)
+   * Timeouts now use absolute timestamps instead of countdown
    * @param port Port number
    * @param decrement Amount to decrement timeout
    */
@@ -255,7 +256,7 @@ private:
    * @param message varient character
    * @param desired message timeout
    */
-  int portWriteNew(int port, char cmd, char *variant, int timeout);
+  int portWrite(int port, char cmd, char *variant, int timeout);
   /**
    * Write over CAN to port vehicle charging parameters
    * @param port Port number

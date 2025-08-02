@@ -51,7 +51,7 @@ void processCANMessage(const can_frame &rawMessage);
 
 // Legacy Functions (for compatibility)
 void receiveMessage(can_frame recMsg);
-int portWriteNew(int port, char cmd, char *variant, int timeout);
+int portWrite(int port, char cmd, char *variant, int timeout);
 int portWriteParams(int port, char volts[], char amps[], int timeout);
 
 // System State Management
