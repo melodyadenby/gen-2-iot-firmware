@@ -93,7 +93,7 @@ void PortFlagHandler::handleUnlockCommand(int port)
   {
     logFlagActivity(port, "EMERGENCY_EXIT", "Processing emergency unlock");
 
-    if (sendPortCommand(port, 'U', "0", 10 * SEC_TO_MS_MULTIPLIER) ==
+    if (sendPortCommand(port, 'U', "0", 3 * SEC_TO_MS_MULTIPLIER) ==
         ERROR_OK)
     {
       state->send_unlock_flag = false;
@@ -108,7 +108,7 @@ void PortFlagHandler::handleUnlockCommand(int port)
   {
     logFlagActivity(port, "UNLOCK", "Sending unlock command");
 
-    if (sendPortCommand(port, 'U', nullptr, 10 * SEC_TO_MS_MULTIPLIER) ==
+    if (sendPortCommand(port, 'U', nullptr, 3 * SEC_TO_MS_MULTIPLIER) ==
         ERROR_OK)
     {
       state->send_unlock_flag = false;
@@ -380,23 +380,57 @@ void PortFlagHandler::handleUnlockSuccess(int port)
   formatCloudMessage("U", "0", port, "1", buffer, sizeof(buffer));
   publishToCloud(buffer);
 
+  // Reset retry count on success
+  PortState *state = getPortState(port);
+  if (state)
+  {
+    state->unlock_retry_count = 0;
+  }
+
   resetPortAfterOperation(port);
 }
 
 void PortFlagHandler::handleUnlockFailure(int port)
 {
-  logFlagActivity(port, "UNLOCK", "Failed - timeout");
+  PortState *state = getPortState(port);
+  if (!state)
+  {
+    return;
+  }
+
+  // Increment retry count
+  state->unlock_retry_count++;
+
+  // Check if we should retry
+  if (state->unlock_retry_count < MAX_UNLOCK_RETRY)
+  {
+    char retryMessage[64];
+    snprintf(retryMessage, sizeof(retryMessage),
+             "Failed - timeout, retry %d/%d", state->unlock_retry_count,
+             MAX_UNLOCK_RETRY);
+    logFlagActivity(port, "UNLOCK", retryMessage);
+
+    // Reset flags to retry the unlock command
+    state->send_unlock_flag = true;
+    state->check_unlock_status = false;
+    state->command_timeout = 0; // Clear timeout to allow immediate retry
+    return;
+  }
+
+  // Max retries reached, report final failure
+  char failureMessage[64];
+  snprintf(failureMessage, sizeof(failureMessage),
+           "Failed - max retries (%d) reached", MAX_UNLOCK_RETRY);
+  logFlagActivity(port, "UNLOCK", failureMessage);
 
   char buffer[16];
   formatCloudMessage("U", "0", port, "0", buffer, sizeof(buffer));
   publishToCloud(buffer);
 
-  PortState *state = getPortState(port);
-  if (state)
-  {
-    state->check_unlock_status = false;
-    state->DID_PORT_CHECK = false;
-  }
+  // Reset all unlock-related flags
+  state->check_unlock_status = false;
+  state->unlock_retry_count = 0;
+  state->DID_PORT_CHECK = false;
 }
 
 void PortFlagHandler::handleChargeSuccess(int port)
@@ -750,7 +784,8 @@ bool PortFlagHandler::sendGetPortData(int addr)
   {
     char error_buff[20];
     ReturnErrorString(result, error_buff, 20);
-    Serial.printlnf("Failed to send data request to port %d, error: %s", addr, error_buff);
+    Serial.printlnf("Failed to send data request to port %d, error: %s", addr,
+                    error_buff);
     return false;
   }
 
