@@ -31,189 +31,260 @@ volatile bool queueOverflow = false;
 volatile int messageCount = 0;
 volatile int queueHead = 0;
 volatile int queueTail = 0;
+
+unsigned long last_port_check_reset =
+    0; // Tracks the last time DID_PORT_CHECK was reset
+const unsigned long port_check_interval = 10 * SEC_TO_MS_MULTIPLIER;
+
 can_frame messageQueue[50];
 
 void setup()
 {
-    initializeSystem();
-    initializeArchitecture();
-    initializeHardware();
+  initializeSystem();
+  initializeArchitecture();
+  initializeHardware();
 
-    if (!CAN_ERROR)
-    {
-        initializeParticle();
-        requestCredentials();
-    }
+  if (!CAN_ERROR)
+  {
+    initializeParticle();
+    requestCredentials();
+  }
 }
 
-void loop()
-{
-    handleSystemLoop();
-}
+void loop() { handleSystemLoop(); }
 
 void initializeArchitecture()
 {
-    // Initialize the clean architecture components
-    portEventHandler = new PortEventHandler(nullptr); // Will use global port state functions
-    portFlagHandler = new PortFlagHandler(nullptr);   // Will use global port state functions
+  // Initialize the clean architecture components
+  portEventHandler =
+      new PortEventHandler(nullptr); // Will use global port state functions
+  portFlagHandler =
+      new PortFlagHandler(nullptr); // Will use global port state functions
 
-    Serial.printlnf("Architecture components initialized");
+  Serial.printlnf("Architecture components initialized");
 }
 
 void initializeSystem()
 {
-    Serial.begin(115200);
-    while (!Serial)
-        ;
-    delay(2000);
+  Serial.begin(115200);
+  while (!Serial)
+    ;
+  delay(2000);
 
-    // Initialize all subsystems
-    initializeConfig();
-    initializePorts();
-    initializeCredentials();
-    initializeMQTT();
+  // Initialize all subsystems
+  initializeConfig();
+  initializePorts();
+  initializeCredentials();
+  initializeMQTT();
 
-    Serial.printlnf("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
-    Serial.printlnf("Device ID: %s", Particle.deviceID().c_str());
-    Serial.printlnf("Environment: %s", getCurrentEnvironment());
-    Serial.printlnf("System initialized");
+  Serial.printlnf("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
+  Serial.printlnf("Device ID: %s", Particle.deviceID().c_str());
+  Serial.printlnf("Environment: %s", getCurrentEnvironment());
+  Serial.printlnf("System initialized");
 }
 
 void initializeHardware()
 {
-    // Setup ring light
-    beginLight();
-    setLightBlue();
+  // Setup ring light
+  beginLight();
+  setLightBlue();
 
-    // Setup SPI for CAN
-    SPI.begin();
-    SPI.setBitOrder(MSBFIRST);
-    SPI.setDataMode(SPI_MODE0);
-    SPI.setClockDivider(SPI_CLOCK_DIV8);
+  // Setup SPI for CAN
+  SPI.begin();
+  SPI.setBitOrder(MSBFIRST);
+  SPI.setDataMode(SPI_MODE0);
+  SPI.setClockDivider(SPI_CLOCK_DIV8);
 
-    // Initialize CAN bus
-    int err = mcp2515.reset();
-    if (err != mcp2515.ERROR_OK)
-    {
-        reportCANError(err, "reset", true);
-        return;
-    }
+  // Initialize CAN bus
+  int err = mcp2515.reset();
+  if (err != mcp2515.ERROR_OK)
+  {
+    reportCANError(err, "reset", true);
+    return;
+  }
 
-    err = mcp2515.setBitrate(CAN_125KBPS, MCP_8MHZ);
-    if (err != mcp2515.ERROR_OK)
-    {
-        reportCANError(err, "setBitrate", true);
-        return;
-    }
+  err = mcp2515.setBitrate(CAN_125KBPS, MCP_8MHZ);
+  if (err != mcp2515.ERROR_OK)
+  {
+    reportCANError(err, "setBitrate", true);
+    return;
+  }
 
-    delay(50);
-    err = mcp2515.setNormalMode();
-    if (err != mcp2515.ERROR_OK)
-    {
-        reportCANError(err, "setNormalMode", true);
-        return;
-    }
+  delay(50);
+  err = mcp2515.setNormalMode();
+  if (err != mcp2515.ERROR_OK)
+  {
+    reportCANError(err, "setNormalMode", true);
+    return;
+  }
 
-    pinMode(CAN_INT, INPUT_PULLUP);
-    attachInterrupt(CAN_INT, can_interrupt, FALLING);
+  pinMode(CAN_INT, INPUT_PULLUP);
+  attachInterrupt(CAN_INT, can_interrupt, FALLING);
 
-    // Start CAN processing thread
-    new Thread("can_thread", canThread);
+  // Start CAN processing thread
+  new Thread("can_thread", canThread);
+  new Thread("port_request_thread", port_request_thread);
 
-    Serial.printlnf("Hardware initialized");
+  Serial.printlnf("Hardware initialized");
 }
 
 void initializeParticle()
 {
-    // Register cloud functions
-    Particle.function("resetDevice", resetDevice);
+  // Register cloud functions
+  Particle.function("resetDevice", resetDevice);
 
-    // Connect to Particle Cloud
-    Particle.connect();
-    Particle.publishVitals();
-    Particle.keepAlive(PARTICLE_KEEPALIVE_MIN * 60);
+  // Connect to Particle Cloud
+  Particle.connect();
+  Particle.publishVitals();
+  Particle.keepAlive(PARTICLE_KEEPALIVE_MIN * 60);
 
-    // Enable system features
-    System.enableFeature(FEATURE_RESET_INFO);
-    System.enableFeature(FEATURE_RETAINED_MEMORY);
+  // Enable system features
+  System.enableFeature(FEATURE_RESET_INFO);
+  System.enableFeature(FEATURE_RETAINED_MEMORY);
 
-    // Wait for connection with timeout
-    setLightRed();
-    waitFor(Particle.connected, 60000);
-    if (!Particle.connected())
-    {
-        Serial.printlnf("Failed to connect to Particle Cloud");
-        resetDevice("Cloud connection timeout");
-        return;
-    }
+  // Wait for connection with timeout
+  setLightRed();
+  waitFor(Particle.connected, 60000);
+  if (!Particle.connected())
+  {
+    Serial.printlnf("Failed to connect to Particle Cloud");
+    resetDevice("Cloud connection timeout");
+    return;
+  }
 
-    // Log reset reason
-    logResetReason();
+  // Log reset reason
+  logResetReason();
 
-    setLightBlue();
-    Serial.printlnf("Particle Cloud connected");
+  setLightBlue();
+  Serial.printlnf("Particle Cloud connected");
 }
 
 void handleSystemLoop()
 {
-    // Handle critical errors first
-    if (CAN_ERROR)
+  // Handle critical errors first
+  if (CAN_ERROR)
+  {
+    blinkCANError();
+    return;
+  }
+
+  // Check for credential fetch failures
+  if (attemptedCredentialsFetchCount > MAX_CREDENTIAL_ATTEMPTS)
+  {
+    Serial.printlnf("Failed to fetch credentials after max attempts");
+    blinkIdentityError();
+    return;
+  }
+
+  // Handle connection states
+  if (!Particle.connected())
+  {
+    setLightRed();
+    return;
+  }
+
+  // Handle MQTT and credentials
+  handleMQTTClientLoop();
+  handleCredentials();
+  updateSystemStatus();
+
+  // System health monitoring
+  checkSystemHealth();
+}
+/**
+ * Handle systematic port data requests with staggered polling
+ * Polls each port in sequence with delays to avoid overwhelming the CAN bus
+ */
+void handlePortDataRequests()
+{
+  unsigned long current_time = millis();
+  if (current_time - last_port_check_reset >= port_check_interval)
+  {
+    Serial.println("TIME TO GET PORT DATA");
+    for (int port = 1; port <= MAX_PORTS; port++)
     {
-        blinkCANError();
-        return;
+      PortState *state = getPortState(port);
+      if (state)
+      {
+        state->DID_PORT_CHECK = false;
+      }
+    }
+    last_port_check_reset = current_time; // Update the last reset time
+    Serial.println("DID_PORT_CHECK reset for all ports.");
+  }
+  static int current_poll_port = 1;
+  static unsigned long last_poll_send_time = 0;
+  const unsigned long POLL_STAGGER_DELAY = 1000; // 1s between requests
+
+  // Check if enough time has passed since last poll
+  if (current_time - last_poll_send_time < POLL_STAGGER_DELAY)
+  {
+    return;
+  }
+  // Check if portFlagHandler is available
+  if (!portFlagHandler)
+  {
+    Serial.printlnf("portFlagHandler not initialized");
+    return;
+  }
+
+  // Find next port that needs polling
+  for (int attempts = 0; attempts < MAX_PORTS; attempts++)
+  {
+    if (current_poll_port > MAX_PORTS)
+    {
+      current_poll_port = 1; // Wrap around
     }
 
-    // Check for credential fetch failures
-    if (attemptedCredentialsFetchCount > MAX_CREDENTIAL_ATTEMPTS)
+    if (!hasPortBeenPolled(current_poll_port))
     {
-        Serial.printlnf("Failed to fetch credentials after max attempts");
-        blinkIdentityError();
-        return;
+      bool success = portFlagHandler->sendGetPortData(current_poll_port);
+
+      if (success)
+      {
+        markPortPolled(current_poll_port);
+        // parsedMsg Serial.printlnf("Polled port %d successfully", current_poll_port);
+      }
+      else
+      {
+        Serial.printlnf("Failed to poll port %d", current_poll_port);
+      }
+
+      last_poll_send_time = current_time;
+      current_poll_port++; // Move to next port for next iteration
+      break;               // Only send one request per cycle
     }
-
-    // Handle connection states
-    if (!Particle.connected())
-    {
-        setLightRed();
-        return;
-    }
-
-    // Handle MQTT and credentials
-    handleMQTTClientLoop();
-    handleCredentials();
-    updateSystemStatus();
-
-    // System health monitoring
-    checkSystemHealth();
+    current_poll_port++;
+  }
 }
 
 void handleCredentials()
 {
-    if (areCredentialsValid())
-    {
-        return; // Already have valid credentials
-    }
+  if (areCredentialsValid())
+  {
+    return; // Already have valid credentials
+  }
 
-    if (shouldRetryCredentials())
-    {
-        requestCredentials();
-    }
+  if (shouldRetryCredentials())
+  {
+    requestCredentials();
+  }
 }
 
 void updateSystemStatus()
 {
-    if (areCredentialsValid() && isMQTTConnected())
-    {
-        setLightGreen(); // All systems operational
-    }
-    else if (areCredentialsValid())
-    {
-        setLightPurple(); // Have credentials, connecting to MQTT
-    }
-    else
-    {
-        setLightBlue(); // Fetching credentials
-    }
+  if (areCredentialsValid() && isMQTTConnected())
+  {
+    setLightGreen(); // All systems operational
+  }
+  else if (areCredentialsValid())
+  {
+    setLightPurple(); // Have credentials, connecting to MQTT
+  }
+  else
+  {
+    setLightBlue(); // Fetching credentials
+  }
 }
 
 // ========================================
@@ -222,125 +293,156 @@ void updateSystemStatus()
 
 void canThread()
 {
-    Serial.printlnf("CAN processing thread started");
+  Serial.printlnf("CAN processing thread started");
 
-    while (true)
+  while (true)
+  {
+    if (areCredentialsValid() && isMQTTConnected() && Particle.connected())
     {
-        // Process incoming CAN messages
-        handleCanQueue();
+      // Process incoming CAN messages
+      handleCanQueue();
 
-        // Process port flags (replaces old flagHandler)
-        if (portFlagHandler)
-        {
-            portFlagHandler->processAllPortFlags();
-        }
+      // Process port flags (replaces old flagHandler)
+      if (portFlagHandler)
+      {
+        portFlagHandler->processAllPortFlags();
+      }
 
-        // Small delay to prevent busy-waiting
-        delay(10);
+      // Small delay to prevent busy-waiting
+      delay(10);
     }
+    else
+    {
+      // Small delay to prevent busy-waiting
+      delay(10);
+    }
+  }
+}
+
+void port_request_thread()
+{
+  while (true)
+  {
+    if (areCredentialsValid() && isMQTTConnected() && Particle.connected())
+    {
+
+      handlePortDataRequests();
+
+      // Small delay to prevent busy-waiting
+      delay(10);
+    }
+    else
+    {
+      // Small delay to prevent busy-waiting
+      delay(10);
+    }
+  }
 }
 
 void handleCanQueue()
 {
-    int messagesProcessed = 0;
-    const int MAX_MESSAGES_PER_LOOP = 8;
+  int messagesProcessed = 0;
+  const int MAX_MESSAGES_PER_LOOP = 8;
 
-    while (messageCount > 0 && messagesProcessed < MAX_MESSAGES_PER_LOOP)
+  while (messageCount > 0 && messagesProcessed < MAX_MESSAGES_PER_LOOP)
+  {
+    can_frame msg;
+    bool validMessage = false;
+
+    // Thread-safe message extraction
+    noInterrupts();
+    if (messageCount > 0)
     {
-        can_frame msg;
-        bool validMessage = false;
+      if (queueHead >= 0 && queueHead < 50 && queueTail >= 0 &&
+          queueTail < 50)
+      {
+        msg = messageQueue[queueHead];
+        queueHead = (queueHead + 1) % 50;
+        messageCount--;
+        validMessage = true;
 
-        // Thread-safe message extraction
-        noInterrupts();
-        if (messageCount > 0)
+        // Handle queue overflow reset
+        if (queueOverflow && messageCount < 25)
         {
-            if (queueHead >= 0 && queueHead < 50 && queueTail >= 0 && queueTail < 50)
-            {
-                msg = messageQueue[queueHead];
-                queueHead = (queueHead + 1) % 50;
-                messageCount--;
-                validMessage = true;
-
-                // Handle queue overflow reset
-                if (queueOverflow && messageCount < 25)
-                {
-                    queueOverflow = false;
-                    Serial.println("Queue overflow cleared");
-                }
-            }
-            else
-            {
-                // Invalid queue state, reset
-                queueTail = 0;
-                queueHead = 0;
-                messageCount = 0;
-                Serial.println("ERROR: Invalid queue indices detected - resetting queue");
-            }
+          queueOverflow = false;
+          Serial.println("Queue overflow cleared");
         }
-        interrupts();
-
-        // Process the message using clean architecture
-        if (validMessage)
-        {
-            processCANMessage(msg);
-            messagesProcessed++;
-        }
-
-        // Yield periodically
-        if (messagesProcessed % 2 == 0)
-        {
-            Particle.process();
-        }
+      }
+      else
+      {
+        // Invalid queue state, reset
+        queueTail = 0;
+        queueHead = 0;
+        messageCount = 0;
+        Serial.println(
+            "ERROR: Invalid queue indices detected - resetting queue");
+      }
     }
+    interrupts();
+
+    // Process the message using clean architecture
+    if (validMessage)
+    {
+      processCANMessage(msg);
+      messagesProcessed++;
+    }
+
+    // Yield periodically
+    if (messagesProcessed % 2 == 0)
+    {
+      Particle.process();
+    }
+  }
 }
 
 void processCANMessage(const can_frame &rawMessage)
 {
-    // 1. Parse the raw CAN message
-    ParsedCANMessage parsedMsg = canProcessor.parseMessage(rawMessage);
+  // 1. Parse the raw CAN message
+  ParsedCANMessage parsedMsg = canProcessor.parseMessage(rawMessage);
 
-    // 2. Log the message for debugging
-    Serial.printlnf("CAN message from port %d: type=%s, valid=%s",
-                    parsedMsg.sourcePort,
-                    canProcessor.getMessageTypeString(parsedMsg.messageType),
-                    parsedMsg.isValid ? "yes" : "no");
+  // 2. Log the message for debugging
+  Serial.printlnf("CAN message from port %d: type=%s, valid=%s",
+                  parsedMsg.sourcePort,
+                  canProcessor.getMessageTypeString(parsedMsg.messageType),
+                  parsedMsg.isValid ? "yes" : "no");
 
-    // 3. Handle the business logic if message is valid
-    if (parsedMsg.isValid && portEventHandler)
-    {
-        portEventHandler->handleCANMessage(parsedMsg);
-    }
-    else if (!parsedMsg.isValid)
-    {
-        Serial.printlnf("Invalid CAN message received from port %d", parsedMsg.sourcePort);
-    }
+  // 3. Handle the business logic if message is valid
+  if (parsedMsg.isValid && portEventHandler)
+  {
+    portEventHandler->handleCANMessage(parsedMsg);
+  }
+  else if (!parsedMsg.isValid)
+  {
+    Serial.printlnf("Invalid CAN message received from port %d",
+                    parsedMsg.sourcePort);
+  }
 }
 
 void can_interrupt()
 {
-    // Minimal interrupt handler - just queue the message
-    struct can_frame recMsg;
+  // Minimal interrupt handler - just queue the message
+  struct can_frame recMsg;
 
-    // Read the message
-    int readin = readCanMessage(&recMsg);
+  // Read the message
+  int readin = readCanMessage(&recMsg);
 
-    if (readin == ERROR_OK)
+  if (readin == ERROR_OK)
+  {
+    // Add to queue if there's space
+    if (messageCount < 50)
     {
-        // Add to queue if there's space
-        if (messageCount < 50)
-        {
-            messageQueue[queueTail] = recMsg;
-            queueTail = (queueTail + 1) % 50;
-            messageCount++;
-        }
-        else
-        {
-            queueOverflow = true;
-        }
+      messageQueue[queueTail] = recMsg;
+      queueTail = (queueTail + 1) % 50;
+      messageCount++;
     }
+    else
+    {
+      queueOverflow = true;
+    }
+  }
 
-    // Clear interrupt flags
-    clearCanInterrupts();
+  // Clear interrupt flags
+  clearCanInterrupts();
 }
 
 // ========================================
@@ -349,91 +451,93 @@ void can_interrupt()
 
 void reportCANError(int err, const char *operation, bool report)
 {
-    if (report)
-    {
-        CAN_ERROR = err != 0;
-    }
+  if (report)
+  {
+    CAN_ERROR = err != 0;
+  }
 
-    if (err != 0)
-    {
-        char ret[150];
-        Serial.printlnf("CAN BUS ERROR %s", operation);
-        ReturnErrorString(err, ret, sizeof(ret));
-        sprintf(can_err_msg, "CAN BUS ERROR %s: %s", operation, ret);
-        Serial.printlnf("%s", can_err_msg);
-    }
+  if (err != 0)
+  {
+    char ret[150];
+    Serial.printlnf("CAN BUS ERROR %s", operation);
+    ReturnErrorString(err, ret, sizeof(ret));
+    sprintf(can_err_msg, "CAN BUS ERROR %s: %s", operation, ret);
+    Serial.printlnf("%s", can_err_msg);
+  }
 }
 
 int resetDevice(String command)
 {
-    if (command.length() > 0)
+  if (command.length() > 0)
+  {
+    Serial.printlnf("Device reset requested. Reason: %s", command.c_str());
+    Serial.printlnf("Free memory before reset: %lu bytes", System.freeMemory());
+    Serial.printlnf("System uptime: %lu ms", millis());
+    Serial.printlnf("MQTT connected: %s", isMQTTConnected() ? "yes" : "no");
+    Serial.printlnf("Credentials valid: %s",
+                    areCredentialsValid() ? "yes" : "no");
+
+    if (isMQTTConnected())
     {
-        Serial.printlnf("Device reset requested. Reason: %s", command.c_str());
-        Serial.printlnf("Free memory before reset: %lu bytes", System.freeMemory());
-        Serial.printlnf("System uptime: %lu ms", millis());
-        Serial.printlnf("MQTT connected: %s", isMQTTConnected() ? "yes" : "no");
-        Serial.printlnf("Credentials valid: %s", areCredentialsValid() ? "yes" : "no");
-
-        if (isMQTTConnected())
-        {
-            Serial.printlnf("Closing MQTT connection...");
-        }
-
-        delay(1000);
+      Serial.printlnf("Closing MQTT connection...");
     }
 
-    System.reset();
-    return 1;
+    delay(1000);
+  }
+
+  System.reset();
+  return 1;
 }
 
 void logDebugInfo(const char *checkpoint)
 {
-    static unsigned long lastLogTime = 0;
-    unsigned long now = millis();
+  static unsigned long lastLogTime = 0;
+  unsigned long now = millis();
 
-    Serial.printlnf("[%lu ms] Checkpoint: %s (Delta: %lu ms)", now, checkpoint,
-                    now - lastLogTime);
+  Serial.printlnf("[%lu ms] Checkpoint: %s (Delta: %lu ms)", now, checkpoint,
+                  now - lastLogTime);
 
-    lastLogTime = now;
+  lastLogTime = now;
 }
 
 void logResetReason()
 {
-    int reason = System.resetReason();
-    int reasonData = System.resetReasonData();
+  int reason = System.resetReason();
+  int reasonData = System.resetReasonData();
 
-    Serial.printlnf("RESET REASON: %d", reason);
-    Serial.printlnf("RESET REASON DATA: %d", reasonData);
+  Serial.printlnf("RESET REASON: %d", reason);
+  Serial.printlnf("RESET REASON DATA: %d", reasonData);
 
-    char buffer[100];
-    snprintf(buffer, sizeof(buffer), "Reason: %d, Data: %d", reason, reasonData);
+  char buffer[100];
+  snprintf(buffer, sizeof(buffer), "Reason: %d, Data: %d", reason, reasonData);
 
-    Particle.publish("RESET REASON", buffer, PRIVATE);
+  Particle.publish("RESET REASON", buffer, PRIVATE);
 }
 
 void checkSystemHealth()
 {
-    unsigned long freeMemory = System.freeMemory();
-    unsigned long uptime = millis();
+  unsigned long freeMemory = System.freeMemory();
+  unsigned long uptime = millis();
 
-    if (freeMemory < 1000)
+  if (freeMemory < 1000)
+  {
+    Serial.printlnf("Low memory warning: %lu bytes", freeMemory);
+  }
+
+  static unsigned long lastHealthCheck = 0;
+  if (uptime - lastHealthCheck > 60000)
+  {
+    Serial.printlnf("System Health - Uptime: %lu ms, Free Memory: %lu bytes",
+                    uptime, freeMemory);
+    Serial.printlnf("MQTT Status: %s", getMQTTStatus().c_str());
+    Serial.printlnf("Credentials: %s", getCredentialsStatus().c_str());
+
+    if (portFlagHandler)
     {
-        Serial.printlnf("Low memory warning: %lu bytes", freeMemory);
+      Serial.printlnf("Ports with pending flags: %d",
+                      portFlagHandler->getPendingPortsCount());
     }
 
-    static unsigned long lastHealthCheck = 0;
-    if (uptime - lastHealthCheck > 60000)
-    {
-        Serial.printlnf("System Health - Uptime: %lu ms, Free Memory: %lu bytes",
-                        uptime, freeMemory);
-        Serial.printlnf("MQTT Status: %s", getMQTTStatus().c_str());
-        Serial.printlnf("Credentials: %s", getCredentialsStatus().c_str());
-
-        if (portFlagHandler)
-        {
-            Serial.printlnf("Ports with pending flags: %d", portFlagHandler->getPendingPortsCount());
-        }
-
-        lastHealthCheck = uptime;
-    }
+    lastHealthCheck = uptime;
+  }
 }

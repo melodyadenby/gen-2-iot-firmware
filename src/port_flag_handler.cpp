@@ -697,3 +697,62 @@ int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout)
 
   return result;
 }
+
+bool PortFlagHandler::sendGetPortData(int addr)
+{
+  if (addr == 0)
+  { // Address 0 is reserved for the IoT device itself
+    return true;
+  }
+
+  if (!isValidPort(addr))
+  {
+    Serial.printlnf("Invalid port number for data request: %d", addr);
+    return false;
+  }
+
+  struct can_frame reqMsg;
+
+  // Clear the entire CAN message buffer to avoid leftover data
+  memset(reqMsg.data, 0, sizeof(reqMsg.data));
+
+  reqMsg.can_id = addr;
+
+  // Construct the message: "R,<port>"
+  reqMsg.data[0] = 'R'; // Command prefix
+  reqMsg.data[1] = ',';
+
+  // Convert port to string for both single and double digit ports
+  char portStr[3];
+  snprintf(portStr, sizeof(portStr), "%d", addr);
+  size_t portStrLen = strlen(portStr);
+
+  // Copy port number string into message
+  for (size_t i = 0; i < portStrLen; i++)
+  {
+    reqMsg.data[2 + i] = portStr[i];
+  }
+
+  // Null-terminate the message and pad remaining bytes
+  reqMsg.data[2 + portStrLen] = '\0';
+
+  // Pad remaining bytes with null terminators
+  for (size_t i = 2 + portStrLen + 1; i < 8; i++)
+  {
+    reqMsg.data[i] = '\0';
+  }
+
+  // Set CAN message length to full 8 bytes
+  reqMsg.can_dlc = 8;
+
+  int result = sendCanMessage(reqMsg);
+  if (result != ERROR_OK)
+  {
+    char error_buff[20];
+    ReturnErrorString(result, error_buff, 20);
+    Serial.printlnf("Failed to send data request to port %d, error: %s", addr, error_buff);
+    return false;
+  }
+
+  return true;
+}

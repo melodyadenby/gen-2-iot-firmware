@@ -5,6 +5,7 @@
 SYSTEM_THREAD(ENABLED);
 SYSTEM_MODE(AUTOMATIC);
 
+SerialLogHandler logHandler(LOG_LEVEL_WARN);
 // Basic includes only to avoid circular dependencies
 #include "Arduino.h"
 #include "Particle.h"
@@ -48,11 +49,6 @@ void initializeArchitecture();
 void canThread();
 void handleCanQueue();
 void processCANMessage(const can_frame &rawMessage);
-
-// Legacy Functions (for compatibility)
-void receiveMessage(can_frame recMsg);
-int portWrite(int port, char cmd, char *variant, int timeout);
-int portWriteParams(int port, char volts[], char amps[], int timeout);
 
 // System State Management
 void initializeSystem();

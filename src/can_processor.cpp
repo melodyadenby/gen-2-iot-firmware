@@ -6,7 +6,8 @@
 CANMessageProcessor canProcessor;
 
 ParsedCANMessage
-CANMessageProcessor::parseMessage(const can_frame &rawMessage) {
+CANMessageProcessor::parseMessage(const can_frame &rawMessage)
+{
   ParsedCANMessage parsedMsg;
 
   // Initialize with defaults
@@ -16,7 +17,8 @@ CANMessageProcessor::parseMessage(const can_frame &rawMessage) {
   memset(&parsedMsg.payload, 0, sizeof(parsedMsg.payload));
 
   // Validate basic message structure
-  if (!isValidMessage(rawMessage)) {
+  if (!isValidMessage(rawMessage))
+  {
     parsedMsg.messageType = CAN_MSG_UNKNOWN;
     return parsedMsg;
   }
@@ -28,8 +30,10 @@ CANMessageProcessor::parseMessage(const can_frame &rawMessage) {
   parsedMsg.messageType = static_cast<CANMessageType>(rawMessage.data[0]);
 
   // Parse based on message type
-  switch (parsedMsg.messageType) {
+  switch (parsedMsg.messageType)
+  {
   case CAN_MSG_STATUS:
+    Serial.printlnf("STATUS RECIEVED FROM PORT %d", rawMessage.can_id);
     parseStatusMessage(rawMessage.data, rawMessage.can_dlc, parsedMsg);
     break;
 
@@ -65,14 +69,17 @@ CANMessageProcessor::parseMessage(const can_frame &rawMessage) {
   return parsedMsg;
 }
 
-bool CANMessageProcessor::isValidMessage(const can_frame &rawMessage) {
+bool CANMessageProcessor::isValidMessage(const can_frame &rawMessage)
+{
   // Check port validity
-  if (!isValidPort(rawMessage.can_id)) {
+  if (!isValidPort(rawMessage.can_id))
+  {
     return false;
   }
 
   // Check message length
-  if (rawMessage.can_dlc == 0 || rawMessage.can_dlc > 8) {
+  if (rawMessage.can_dlc == 0 || rawMessage.can_dlc > 8)
+  {
     return false;
   }
 
@@ -83,8 +90,10 @@ bool CANMessageProcessor::isValidMessage(const can_frame &rawMessage) {
           msgType == 'U' || msgType == 'C');
 }
 
-const char *CANMessageProcessor::getMessageTypeString(CANMessageType type) {
-  switch (type) {
+const char *CANMessageProcessor::getMessageTypeString(CANMessageType type)
+{
+  switch (type)
+  {
   case CAN_MSG_STATUS:
     return "STATUS";
   case CAN_MSG_VIN:
@@ -106,14 +115,18 @@ const char *CANMessageProcessor::getMessageTypeString(CANMessageType type) {
   }
 }
 
-bool CANMessageProcessor::isValidPort(uint32_t port) {
+bool CANMessageProcessor::isValidPort(uint32_t port)
+{
   return (port >= 1 && port <= MAX_PORTS);
 }
 
 void CANMessageProcessor::parseStatusMessage(const uint8_t *payload,
                                              size_t length,
-                                             ParsedCANMessage &parsedMsg) {
-  if (length < 6) {
+                                             ParsedCANMessage &parsedMsg)
+{
+  Serial.printlnf("%s", payload);
+  if (length < 6)
+  {
     parsedMsg.isValid = false;
     return;
   }
@@ -130,27 +143,32 @@ void CANMessageProcessor::parseStatusMessage(const uint8_t *payload,
 }
 
 void CANMessageProcessor::parseVINMessage(const uint8_t *payload, size_t length,
-                                          ParsedCANMessage &parsedMsg) {
-  if (length < 2) {
+                                          ParsedCANMessage &parsedMsg)
+{
+  if (length < 2)
+  {
     parsedMsg.isValid = false;
     return;
   }
 
   // Debug: Print raw payload
   Serial.print("VIN Raw payload: ");
-  for (size_t i = 0; i < length; i++) {
+  for (size_t i = 0; i < length; i++)
+  {
     Serial.printf("%c", payload[i]);
   }
   Serial.println();
 
   Serial.print("VIN Raw bytes: ");
-  for (size_t i = 0; i < length; i++) {
+  for (size_t i = 0; i < length; i++)
+  {
     Serial.printf("0x%02X ", payload[i]);
   }
   Serial.println();
 
   // Check if payload starts with 'K'
-  if (payload[0] != 'K') {
+  if (payload[0] != 'K')
+  {
     Serial.println("VIN message doesn't start with 'K'");
     parsedMsg.isValid = false;
     return;
@@ -158,7 +176,8 @@ void CANMessageProcessor::parseVINMessage(const uint8_t *payload, size_t length,
 
   // Extract VIN data after "K" prefix (no comma expected)
   size_t vinDataLen = length - 1; // Skip only the 'K'
-  if (vinDataLen >= sizeof(parsedMsg.vinData.vin)) {
+  if (vinDataLen >= sizeof(parsedMsg.vinData.vin))
+  {
     vinDataLen = sizeof(parsedMsg.vinData.vin) - 1;
   }
 
@@ -171,15 +190,18 @@ void CANMessageProcessor::parseVINMessage(const uint8_t *payload, size_t length,
 
 void CANMessageProcessor::parseTemperatureMessage(const uint8_t *payload,
                                                   size_t length,
-                                                  ParsedCANMessage &parsedMsg) {
-  if (length < 3) {
+                                                  ParsedCANMessage &parsedMsg)
+{
+  if (length < 3)
+  {
     parsedMsg.isValid = false;
     return;
   }
 
   // Extract temperature data after "T," prefix
   size_t tempDataLen = length - 2;
-  if (tempDataLen >= sizeof(parsedMsg.tempData.temperature)) {
+  if (tempDataLen >= sizeof(parsedMsg.tempData.temperature))
+  {
     tempDataLen = sizeof(parsedMsg.tempData.temperature) - 1;
   }
 
@@ -194,15 +216,18 @@ void CANMessageProcessor::parseTemperatureMessage(const uint8_t *payload,
 
 void CANMessageProcessor::parseFirmwareMessage(const uint8_t *payload,
                                                size_t length,
-                                               ParsedCANMessage &parsedMsg) {
-  if (length < 3) {
+                                               ParsedCANMessage &parsedMsg)
+{
+  if (length < 3)
+  {
     parsedMsg.isValid = false;
     return;
   }
 
   // Extract firmware version after "V," prefix
   size_t versionDataLen = length - 2;
-  if (versionDataLen >= sizeof(parsedMsg.firmwareData.version)) {
+  if (versionDataLen >= sizeof(parsedMsg.firmwareData.version))
+  {
     versionDataLen = sizeof(parsedMsg.firmwareData.version) - 1;
   }
 
@@ -214,8 +239,10 @@ void CANMessageProcessor::parseFirmwareMessage(const uint8_t *payload,
 
 void CANMessageProcessor::parseChargeMessage(const uint8_t *payload,
                                              size_t length,
-                                             ParsedCANMessage &parsedMsg) {
-  if (length < 3) {
+                                             ParsedCANMessage &parsedMsg)
+{
+  if (length < 3)
+  {
     parsedMsg.isValid = false;
     return;
   }
@@ -228,10 +255,12 @@ void CANMessageProcessor::parseChargeMessage(const uint8_t *payload,
 
 void CANMessageProcessor::safeExtractString(const uint8_t *payload,
                                             size_t offset, size_t length,
-                                            char *output, size_t outputSize) {
+                                            char *output, size_t outputSize)
+{
   // Ensure we don't read beyond payload or output buffer
   size_t copyLen = length;
-  if (copyLen >= outputSize) {
+  if (copyLen >= outputSize)
+  {
     copyLen = outputSize - 1;
   }
 

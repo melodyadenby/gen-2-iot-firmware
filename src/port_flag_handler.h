@@ -203,6 +203,13 @@ public:
    */
   int getPendingPortsCount();
 
+  /**
+   * Send Information Request To Port
+   * Sends "R,<port>" command to request port data
+   * @param addr CAN address
+   */
+  bool sendGetPortData(int addr);
+
 private:
   int currentPort; // Current port being processed in round-robin
 
