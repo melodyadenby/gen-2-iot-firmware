@@ -42,10 +42,7 @@ volatile bool can_recovery_needed = false;
 const int MAX_CAN_ERRORS_PER_MINUTE = 50;
 const unsigned long CAN_ERROR_RESET_INTERVAL = 60000; // 1 minute
 
-// Watchdog Configuration
-const unsigned long WATCHDOG_TIMEOUT = 30000; // 30 seconds
-unsigned long last_watchdog_feed = 0;
-bool watchdog_enabled = false;
+// Hardware watchdog handles all freeze detection at 20-second timeout
 
 // Interrupt Health Monitoring
 unsigned long lastTransmissionTime = 0;
@@ -82,8 +79,8 @@ can_frame messageQueue[50];
 unsigned long lastInterruptTime = 0;
 unsigned long lastInterruptCheck = 0;
 bool interruptStuckDetected = false;
-const unsigned long INTERRUPT_TIMEOUT = 30000;        // 30 seconds without interrupt
-const unsigned long INTERRUPT_CHECK_INTERVAL = 10000; // Check every 10 seconds
+const unsigned long INTERRUPT_TIMEOUT = PORT_CHECK_INTERVAL * 2 + 5000; // PORT_CHECK_INTERVAL plus some time to allow delay seconds without interrupt
+const unsigned long INTERRUPT_CHECK_INTERVAL = 10000;                   // Check every 10 seconds
 
 // Global hardware watchdog object
 ApplicationWatchdog *hardwareWatchdog;
@@ -96,8 +93,6 @@ void checkTransmissionReceptionBalance();
 // Hardware watchdog handler
 void hardwareWatchdogHandler()
 {
-  // Do minimal work here - just reset the system
-  // Don't use Serial.print, Particle.publish, etc.
   System.reset(RESET_NO_WAIT);
 }
 
@@ -105,10 +100,10 @@ void setup()
 {
   initializeSystem();
 
-  // Initialize hardware watchdog early - 60 second timeout
+  // Initialize hardware watchdog early - 20 second timeout
   hardwareWatchdog =
-      new ApplicationWatchdog(60000, hardwareWatchdogHandler, 1536);
-  Serial.printlnf("Hardware ApplicationWatchdog initialized (60s timeout)");
+      new ApplicationWatchdog(20000, hardwareWatchdogHandler, 1536);
+  Serial.printlnf("Hardware ApplicationWatchdog initialized (20s timeout)");
 
   initializeArchitecture();
   initializeHardware();
@@ -122,12 +117,9 @@ void setup()
     canErrorMonitor.lastSuccessTime = millis();
     canErrorMonitor.recoveryAttempts = 0;
 
-    // Enable watchdog after successful initialization
-    enableWatchdog();
-
     Serial.printlnf("=== SYSTEM STARTUP COMPLETE ===");
     Serial.printlnf("CAN Error Monitoring: ENABLED");
-    Serial.printlnf("Watchdog Timer: ENABLED");
+    Serial.printlnf("Hardware Watchdog: ENABLED (20s timeout)");
     Serial.printlnf("Recovery System: READY");
   }
   else
@@ -139,6 +131,7 @@ void setup()
 
 void loop()
 {
+
   static unsigned long lastLoopTime = 0;
   unsigned long currentTime = millis();
 
@@ -149,10 +142,7 @@ void loop()
                     currentTime - lastLoopTime);
   }
   lastLoopTime = currentTime;
-
   handleSystemLoop();
-  checkWatchdog();
-  feedWatchdog();                 // Feed watchdog at end of successful loop iteration
   ApplicationWatchdog::checkin(); // Feed hardware watchdog
 
   // Small delay to prevent CPU overload during error conditions
@@ -281,9 +271,6 @@ void initializeParticle()
 
 void handleSystemLoop()
 {
-  // Feed watchdog FIRST
-  feedWatchdog();
-
   // Handle CAN recovery IMMEDIATELY - before anything else
   if (can_recovery_needed)
   {
@@ -297,8 +284,7 @@ void handleSystemLoop()
   if (CAN_ERROR)
   {
     blinkCANError();
-    feedWatchdog(); // Keep feeding watchdog during error state
-    delay(100);     // Prevent tight loop
+    delay(100); // Prevent tight loop
     return;
   }
 
@@ -454,8 +440,7 @@ void handlePortDataRequests()
           return; // Stop polling immediately
         }
 
-        // Feed watchdog during error conditions to prevent timeout
-        feedWatchdog();
+        // Hardware watchdog will handle timeout protection automatically
       }
 
       last_poll_send_time = current_time;
@@ -755,8 +740,6 @@ void can_interrupt()
 // CAN Error Monitoring and Recovery
 // ========================================
 
-
-
 void performCANRecovery()
 {
   Serial.printlnf("=== PERFORMING EMERGENCY CAN RECOVERY ===");
@@ -981,36 +964,7 @@ void resetCANSuccessCounter()
 // ========================================
 // Watchdog Functions
 // ========================================
-
-void enableWatchdog()
-{
-  watchdog_enabled = true;
-  last_watchdog_feed = millis();
-  Serial.printlnf("Watchdog enabled with %lu ms timeout", WATCHDOG_TIMEOUT);
-}
-
-void feedWatchdog()
-{
-  if (watchdog_enabled)
-  {
-    last_watchdog_feed = millis();
-  }
-}
-
-void checkWatchdog()
-{
-  if (watchdog_enabled)
-  {
-    unsigned long currentTime = millis();
-    if (currentTime - last_watchdog_feed > WATCHDOG_TIMEOUT)
-    {
-      Serial.printlnf(
-          "Watchdog timeout! System has been unresponsive for %lu ms",
-          currentTime - last_watchdog_feed);
-      resetDevice("Watchdog timeout");
-    }
-  }
-}
+// Software watchdog functions removed - using hardware ApplicationWatchdog only
 
 // ========================================
 // Utility Functions
@@ -1208,17 +1162,12 @@ void canHealthMonitorThread()
 
       // Reset if no successful operations for too long
       if (canErrorMonitor.lastSuccessTime > 0 &&
-          currentTime - canErrorMonitor.lastSuccessTime > 60000)
+          currentTime - canErrorMonitor.lastSuccessTime > PORT_CHECK_INTERVAL * 2 + 5000)
       { // 1 minute
-        emergencyReset("No successful CAN operations for 60 seconds");
+        emergencyReset("No successful CAN operations for over the PORT_CHECK_INTERVAL allowed time seconds");
       }
 
-      // Check for watchdog issues
-      if (watchdog_enabled &&
-          currentTime - last_watchdog_feed > MAIN_LOOP_TIMEOUT)
-      {
-        emergencyReset("Main loop freeze detected");
-      }
+      // Hardware watchdog handles main loop freeze detection automatically
 
       // Check CAN error rate with lower threshold
       if (canErrorMonitor.consecutiveErrors >= 6)
@@ -1282,7 +1231,8 @@ void checkInterruptHealth()
   {
     // System not ready - don't monitor interrupts yet
     static bool wasReady = false;
-    if (wasReady) {
+    if (wasReady)
+    {
       Serial.printlnf("Interrupt health monitoring disabled - system not fully operational");
       wasReady = false;
     }
@@ -1292,7 +1242,8 @@ void checkInterruptHealth()
 
   // Log when monitoring becomes active
   static bool wasReady = false;
-  if (!wasReady) {
+  if (!wasReady)
+  {
     Serial.printlnf("Interrupt health monitoring enabled - system fully operational");
     wasReady = true;
     lastInterruptTime = currentTime; // Start fresh when monitoring begins
@@ -1373,7 +1324,8 @@ void checkTransmissionReceptionBalance()
   {
     // System not ready - reset timers to prevent false alarms
     static bool txRxWasReady = false;
-    if (txRxWasReady) {
+    if (txRxWasReady)
+    {
       Serial.printlnf("TX/RX balance monitoring disabled - system not fully operational");
       txRxWasReady = false;
     }
@@ -1384,7 +1336,8 @@ void checkTransmissionReceptionBalance()
 
   // Log when TX/RX monitoring becomes active
   static bool txRxWasReady = false;
-  if (!txRxWasReady) {
+  if (!txRxWasReady)
+  {
     Serial.printlnf("TX/RX balance monitoring enabled - system fully operational");
     txRxWasReady = true;
     lastTransmissionTime = currentTime; // Start fresh when monitoring begins

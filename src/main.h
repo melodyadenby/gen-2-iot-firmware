@@ -63,9 +63,6 @@ void logResetReason();
 void performCANRecovery();
 void logCANError(int errorCode, const char *operation);
 
-// Watchdog Functions
-void enableWatchdog();
-void feedWatchdog();
-void checkWatchdog();
+// Hardware Watchdog (ApplicationWatchdog) is used instead of software watchdog
 
 #endif // MAIN_H

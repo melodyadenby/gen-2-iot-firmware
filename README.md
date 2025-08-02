@@ -302,19 +302,12 @@ void performCANRecovery() {
 #### **Independent Safety Monitor**
 
 ```cpp
-void canHealthMonitorThread() {
-    while (true) {
-        // Emergency reset triggers
-        if (canErrorMonitor.consecutiveErrors >= 10) {
-            emergencyReset("Excessive consecutive CAN errors");
-        }
+hardwareWatchdog =
+      new ApplicationWatchdog(20000, hardwareWatchdogHandler, 1536);
 
-        if (millis() - last_watchdog_feed > 20000) {
-            emergencyReset("Main loop freeze detected");
-        }
-
-        delay(1000); // Check every second
-    }
+void hardwareWatchdogHandler()
+{
+  System.reset(RESET_NO_WAIT);
 }
 ```
 
