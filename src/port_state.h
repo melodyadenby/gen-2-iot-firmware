@@ -5,7 +5,7 @@
 #include "Particle.h"
 #include "config.h"
 
-const unsigned long port_check_interval = 10 * SEC_TO_MS_MULTIPLIER;
+const unsigned long PORT_CHECK_INTERVAL = 5 * SEC_TO_MS_MULTIPLIER;
 
 const int VIN_LENGTH = 16;
 const int MAX_UNLOCK_RETRY = 3;
