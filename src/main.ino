@@ -1,12 +1,15 @@
 #include "Arduino.h"
 #include "Particle.h"
 #include "can.h"
+#include "can_processor.h"
 #include "config.h"
 #include "credentials.h"
 #include "fixes/json_compat.h"
 #include "lights.h"
 #include "main.h"
 #include "mqtt.h"
+#include "port_event_handler.h"
+#include "port_flag_handler.h"
 #include "port_state.h"
 #include "utils.h"
 #include <ArduinoJson.h>
@@ -20,20 +23,42 @@ PRODUCT_VERSION(PRODUCT_VERSION_NUM);
 char can_err_msg[200];
 bool CAN_ERROR = false;
 
+// Architecture components
+PortEventHandler *portEventHandler = nullptr;
+PortFlagHandler *portFlagHandler = nullptr;
+
+volatile bool queueOverflow = false;
+volatile int messageCount = 0;
+volatile int queueHead = 0;
+volatile int queueTail = 0;
+can_frame messageQueue[50];
+
 void setup()
 {
     initializeSystem();
+    initializeArchitecture();
     initializeHardware();
+
     if (!CAN_ERROR)
     {
         initializeParticle();
-
-        // Request initial credentials
         requestCredentials();
     }
 }
 
-void loop() { handleSystemLoop(); }
+void loop()
+{
+    handleSystemLoop();
+}
+
+void initializeArchitecture()
+{
+    // Initialize the clean architecture components
+    portEventHandler = new PortEventHandler(nullptr); // Will use global port state functions
+    portFlagHandler = new PortFlagHandler(nullptr);   // Will use global port state functions
+
+    Serial.printlnf("Architecture components initialized");
+}
 
 void initializeSystem()
 {
@@ -92,6 +117,7 @@ void initializeHardware()
     pinMode(CAN_INT, INPUT_PULLUP);
     attachInterrupt(CAN_INT, can_interrupt, FALLING);
 
+    // Start CAN processing thread
     new Thread("can_thread", canThread);
 
     Serial.printlnf("Hardware initialized");
@@ -156,14 +182,9 @@ void handleSystemLoop()
     handleMQTTClientLoop();
     handleCredentials();
     updateSystemStatus();
-}
 
-void canThread()
-{
-    while (true)
-    {
-        handleCanQueue();
-    }
+    // System health monitoring
+    checkSystemHealth();
 }
 
 void handleCredentials()
@@ -194,164 +215,137 @@ void updateSystemStatus()
         setLightBlue(); // Fetching credentials
     }
 }
+
+// ========================================
+// CAN Processing
+// ========================================
+
+void canThread()
+{
+    Serial.printlnf("CAN processing thread started");
+
+    while (true)
+    {
+        // Process incoming CAN messages
+        handleCanQueue();
+
+        // Process port flags (replaces old flagHandler)
+        if (portFlagHandler)
+        {
+            portFlagHandler->processAllPortFlags();
+        }
+
+        // Small delay to prevent busy-waiting
+        delay(10);
+    }
+}
+
 void handleCanQueue()
 {
     int messagesProcessed = 0;
-    const int MAX_MESSAGES_PER_LOOP =
-        8; // Process fewer messages per loop for stability
-    int queueMessageCount = 0;
+    const int MAX_MESSAGES_PER_LOOP = 8;
 
-    // Check and handle queue overflow
-    if (queueOverflow)
+    while (messageCount > 0 && messagesProcessed < MAX_MESSAGES_PER_LOOP)
     {
-        Serial.println(
-            "WARNING: CAN message queue overflow detected - clearing queue");
-        noInterrupts();
-        queueHead = 0;
-        queueTail = 0;
-        messageCount = 0;
-        queueOverflow = false;
-        interrupts();
-        // clearAllCANBuffers();
-    }
-
-    // Make a safe local copy of the count with interrupts disabled
-    noInterrupts();
-    queueMessageCount =
-        (messageCount > CAN_QUEUE_SIZE) ? CAN_QUEUE_SIZE : messageCount;
-    interrupts();
-
-    // Prevent processing if we're approaching a loop timeout
-    unsigned long processingStartTime = millis();
-    const unsigned long MAX_PROCESSING_TIME =
-        3000; // Max 3 seconds for CAN processing
-
-    while (queueMessageCount > 0 &&
-           messagesProcessed < MAX_MESSAGES_PER_LOOP)
-    {
-        // Check if we're taking too long
-        if (millis() - processingStartTime > MAX_PROCESSING_TIME)
-        {
-            Serial.println(
-                "WARNING: Breaking CAN processing loop due to timeout");
-            break;
-        }
-
         can_frame msg;
         bool validMessage = false;
 
-        noInterrupts(); // Critical section for accessing shared variables
-        // Only dequeue if there are still messages
+        // Thread-safe message extraction
+        noInterrupts();
         if (messageCount > 0)
         {
-            // Validate queue indices are in valid range before accessing array
-            if (queueTail < CAN_QUEUE_SIZE)
+            if (queueHead >= 0 && queueHead < 50 && queueTail >= 0 && queueTail < 50)
             {
-                memcpy(&msg, &canMessageQueue[queueTail], sizeof(can_frame));
-                queueTail = (queueTail + 1) % CAN_QUEUE_SIZE;
+                msg = messageQueue[queueHead];
+                queueHead = (queueHead + 1) % 50;
                 messageCount--;
-                queueMessageCount--;
                 validMessage = true;
+
+                // Handle queue overflow reset
+                if (queueOverflow && messageCount < 25)
+                {
+                    queueOverflow = false;
+                    Serial.println("Queue overflow cleared");
+                }
             }
             else
             {
-                // Invalid queue state detected, reset indices
+                // Invalid queue state, reset
                 queueTail = 0;
                 queueHead = 0;
                 messageCount = 0;
-                queueMessageCount = 0;
-                Serial.println(
-                    "ERROR: Invalid queue indices detected - resetting queue");
+                Serial.println("ERROR: Invalid queue indices detected - resetting queue");
             }
-
-            // Track statistics (moved from interrupt handler)
-            incrementMessageCounter();
-        }
-        else
-        {
-            // Somehow the count changed, break out
-            queueMessageCount = 0;
         }
         interrupts();
 
-        // Now safely process the message in main loop context
+        // Process the message using clean architecture
         if (validMessage)
         {
-            receiveMessage(msg);
+            processCANMessage(msg);
             messagesProcessed++;
         }
 
-        // Yield more frequently (every 2 messages instead of 3)
+        // Yield periodically
         if (messagesProcessed % 2 == 0)
         {
             Particle.process();
         }
     }
 }
-void receiveMessage(can_frame recMsg)
+
+void processCANMessage(const can_frame &rawMessage)
 {
-    int addr = recMsg.can_id;
-    if (addr <= 0 || addr > MAX_PORTS)
+    // 1. Parse the raw CAN message
+    ParsedCANMessage parsedMsg = canProcessor.parseMessage(rawMessage);
+
+    // 2. Log the message for debugging
+    Serial.printlnf("CAN message from port %d: type=%s, valid=%s",
+                    parsedMsg.sourcePort,
+                    canProcessor.getMessageTypeString(parsedMsg.messageType),
+                    parsedMsg.isValid ? "yes" : "no");
+
+    // 3. Handle the business logic if message is valid
+    if (parsedMsg.isValid && portEventHandler)
     {
-        return;
+        portEventHandler->handleCANMessage(parsedMsg);
     }
-    Serial.printlnf("MESSAGE FROM ADDRESS: %d", recMsg.can_id);
-    Serial.printlnf("%s", recMsg.data);
+    else if (!parsedMsg.isValid)
+    {
+        Serial.printlnf("Invalid CAN message received from port %d", parsedMsg.sourcePort);
+    }
 }
 
 void can_interrupt()
 {
-    // Minimize work in the interrupt handler
+    // Minimal interrupt handler - just queue the message
     struct can_frame recMsg;
-
-    // Disable interrupts during critical section
-    noInterrupts();
 
     // Read the message
     int readin = readCanMessage(&recMsg);
 
     if (readin == ERROR_OK)
     {
-        if (messageCount < CAN_QUEUE_SIZE - 1 &&
-            queueHead < CAN_QUEUE_SIZE)
-        { // Leave one slot as safety margin and
-          // validate index
-            // Copy the message to the queue without any processing
-            memcpy(&canMessageQueue[queueHead], &recMsg, sizeof(can_frame));
-            queueHead = (queueHead + 1) % CAN_QUEUE_SIZE;
-
-            // Protect against overflow
-            if (messageCount < UINT16_MAX)
-            {
-                messageCount++;
-            }
+        // Add to queue if there's space
+        if (messageCount < 50)
+        {
+            messageQueue[queueTail] = recMsg;
+            queueTail = (queueTail + 1) % 50;
+            messageCount++;
         }
         else
         {
-            // Queue is full or index invalid - set overflow flag and increment
-            // counter
             queueOverflow = true;
-
-            // Reset head/tail if they're out of bounds (corruption detection)
-            if (queueHead >= CAN_QUEUE_SIZE || queueTail >= CAN_QUEUE_SIZE)
-            {
-                queueHead = 0;
-                queueTail = 0;
-                messageCount = 0;
-            }
         }
-    }
-    else if (readin == MCP2515::ERROR_FAIL)
-    {
-        Serial.printlnf("CAN message error");
     }
 
     // Clear interrupt flags
     clearCanInterrupts();
-
-    // Re-enable interrupts
-    interrupts();
 }
+
+// ========================================
+// Utility Functions (Unchanged)
+// ========================================
 
 void reportCANError(int err, const char *operation, bool report)
 {
@@ -367,37 +361,29 @@ void reportCANError(int err, const char *operation, bool report)
         ReturnErrorString(err, ret, sizeof(ret));
         sprintf(can_err_msg, "CAN BUS ERROR %s: %s", operation, ret);
         Serial.printlnf("%s", can_err_msg);
-
-        // Optionally publish to cloud
-        // Particle.publish("CAN ERROR", can_err_msg, PRIVATE);
     }
 }
 
 int resetDevice(String command)
 {
-    // Log reset request with reason if provided
     if (command.length() > 0)
     {
         Serial.printlnf("Device reset requested. Reason: %s", command.c_str());
-
-        // Report last state before reset
         Serial.printlnf("Free memory before reset: %lu bytes", System.freeMemory());
         Serial.printlnf("System uptime: %lu ms", millis());
         Serial.printlnf("MQTT connected: %s", isMQTTConnected() ? "yes" : "no");
-        Serial.printlnf("Credentials valid: %s",
-                        areCredentialsValid() ? "yes" : "no");
+        Serial.printlnf("Credentials valid: %s", areCredentialsValid() ? "yes" : "no");
 
-        // Attempt to close connections gracefully
         if (isMQTTConnected())
         {
             Serial.printlnf("Closing MQTT connection...");
         }
 
-        delay(1000); // Give serial time to send
+        delay(1000);
     }
 
     System.reset();
-    return 1; // Won't actually get here
+    return 1;
 }
 
 void logDebugInfo(const char *checkpoint)
@@ -427,23 +413,26 @@ void logResetReason()
 
 void checkSystemHealth()
 {
-    // System health monitoring
     unsigned long freeMemory = System.freeMemory();
     unsigned long uptime = millis();
 
     if (freeMemory < 1000)
-    { // Less than 1KB free
+    {
         Serial.printlnf("Low memory warning: %lu bytes", freeMemory);
     }
 
-    // Log periodic system status
     static unsigned long lastHealthCheck = 0;
     if (uptime - lastHealthCheck > 60000)
-    { // Every minute
+    {
         Serial.printlnf("System Health - Uptime: %lu ms, Free Memory: %lu bytes",
                         uptime, freeMemory);
         Serial.printlnf("MQTT Status: %s", getMQTTStatus().c_str());
         Serial.printlnf("Credentials: %s", getCredentialsStatus().c_str());
+
+        if (portFlagHandler)
+        {
+            Serial.printlnf("Ports with pending flags: %d", portFlagHandler->getPendingPortsCount());
+        }
 
         lastHealthCheck = uptime;
     }

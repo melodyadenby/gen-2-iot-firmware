@@ -12,6 +12,9 @@ SYSTEM_MODE(AUTOMATIC);
 // Forward declarations for types from other modules
 struct PortState;
 struct IotCredentials;
+class CANMessageProcessor;
+class PortEventHandler;
+class PortFlagHandler;
 
 // CAN Bus State - declared here to avoid circular includes
 #define CAN_INT A4
@@ -21,11 +24,16 @@ extern bool CAN_ERROR;
 #define CAN_RECOVERY_DELAY 50        // ms to delay after CAN error
 #define CAN_MAX_CONSECUTIVE_ERRORS 3 // Number of errors before controller reset
 
-can_frame canMessageQueue[CAN_QUEUE_SIZE]; // Circular buffer for CAN messages
-volatile int queueHead = 0;
-volatile int queueTail = 0;
-volatile int messageCount = 0;
-volatile bool queueOverflow = false; // Flag to track queue overflow
+// CAN message queue variables (defined in main.ino)
+extern volatile bool queueOverflow;
+extern volatile int messageCount;
+extern volatile int queueHead;
+extern volatile int queueTail;
+extern can_frame messageQueue[50];
+
+// Architecture Components
+extern PortEventHandler *portEventHandler;
+extern PortFlagHandler *portFlagHandler;
 
 // Core System Functions
 void setup();
@@ -34,7 +42,17 @@ void can_interrupt();
 void reportCANError(int err, const char *operation, bool report);
 int resetDevice(String command);
 void logDebugInfo(const char *checkpoint);
+
+// New Architecture Functions
+void initializeArchitecture();
+void canThread();
+void handleCanQueue();
+void processCANMessage(const can_frame &rawMessage);
+
+// Legacy Functions (for compatibility)
 void receiveMessage(can_frame recMsg);
+int portWriteNew(int port, char cmd, char *variant, int timeout);
+int portWriteParams(int port, char volts[], char amps[], int timeout);
 
 // System State Management
 void initializeSystem();

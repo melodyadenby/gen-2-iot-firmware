@@ -11,7 +11,6 @@
 #define MQTT_PORT 1883
 #define KEEP_ALIVE 120 // seconds
 #define MQTT_MAX_PACKET_SIZE 300
-#define OLD_MQTT_URL "615.mqtt.kuhmute.org"
 
 // MQTT Connection State
 extern char MQTT_CLIENT_ID[45];

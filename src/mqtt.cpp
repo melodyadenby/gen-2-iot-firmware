@@ -57,6 +57,7 @@ void initializeMQTT()
 
 void handleMQTTClientLoop()
 {
+  client.loop();
   BROKER_CONNECTED = client.isConnected();
   checkMQTTStat();
 }
@@ -94,7 +95,8 @@ void attemptReconnect()
 {
   unsigned long currentMillis = millis();
 
-  Serial.printlnf("Time since last attempt: %lu ms\n", currentMillis - lastRetryTime);
+  Serial.printlnf("Time since last attempt: %lu ms\n",
+                  currentMillis - lastRetryTime);
   Serial.printlnf("Current retry interval: %lu ms\n", currentRetryInterval);
 
   if (currentMillis - lastRetryTime >= currentRetryInterval)
@@ -198,7 +200,7 @@ bool connect_broker()
 
 void sub_topic_and_alert()
 {
-  Serial.println("PUBLISHING A,0,1");
+  Serial.printlnf("PUBLISHING A,0,1 to topic: %s\n", MQTT_PUB_TOPIC);
   int res = client.publish(MQTT_PUB_TOPIC, "A,0,1");
   Serial.printlnf("sub_topic_and_alert: MQTT PUB STAT: %d\n", res);
 
@@ -208,6 +210,7 @@ void sub_topic_and_alert()
     return;
   }
 
+  Serial.printlnf("SUBSCRIBING to topic: %s\n", MQTT_SUB_TOPIC);
   res = client.subscribe(MQTT_SUB_TOPIC);
   Serial.printlnf("sub_topic_and_alert: MQTT SUB STAT: %d\n", res);
 
@@ -221,6 +224,7 @@ void sub_topic_and_alert()
 void publishCloud(String message)
 {
   Serial.printlnf("Going to publish cloud: %s\n", message.c_str());
+  Serial.printlnf("Publishing to topic: %s\n", MQTT_PUB_TOPIC);
 
   if (!BROKER_CONNECTED)
   {
@@ -230,6 +234,17 @@ void publishCloud(String message)
 
   bool res = client.publish(MQTT_PUB_TOPIC, message);
   Serial.printlnf("publishCloud result: %s\n", res ? "success" : "failed");
+
+  if (!res)
+  {
+    Serial.printlnf("MQTT publish failed - topic: %s, message: %s\n",
+                    MQTT_PUB_TOPIC, message.c_str());
+  }
+  else
+  {
+    Serial.printlnf("MQTT publish successful - topic: %s, message: %s\n",
+                    MQTT_PUB_TOPIC, message.c_str());
+  }
 
   if (res)
   {
@@ -250,7 +265,9 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length)
   memcpy(p, payload, length);
   p[length] = '\0';
 
-  Serial.printlnf("MQTT message received: %s\n", p);
+  Serial.printlnf("MQTT message received on topic '%s': %s\n", topic, p);
+  Serial.printlnf("Our subscribe topic: %s\n", MQTT_SUB_TOPIC);
+  Serial.printlnf("Our publish topic: %s\n", MQTT_PUB_TOPIC);
 
   // Parse the message by comma delimiter
   char *token;
@@ -299,7 +316,8 @@ void processMQTTCommand(char cmd, char variant, int port, char btn,
       portState->charge_varient = variant;
       portState->send_charge_flag = true;
       portState->awaiting_cloud_vin_resp = false;
-      Serial.printlnf("Charge command for port %d, variant %c\n", port, variant);
+      Serial.printlnf("Charge command for port %d, variant %c\n", port,
+                      variant);
     }
     else
     {
