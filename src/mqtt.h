@@ -19,6 +19,8 @@ extern char MQTT_SUB_TOPIC[256];
 extern char MANUAL_MODE[14];
 extern bool BROKER_CONNECTED;
 
+extern char portStatusRequest[64];
+
 // MQTT Retry Logic
 extern unsigned long mqtt_disconnected_timer;
 extern bool mqtt_disconnect_noted;
@@ -61,5 +63,10 @@ unsigned long getLastMQTTSend();
 int getMQTTFailCount();
 void resetMQTTFailCount();
 bool shouldRetryMQTT();
+
+// Port Status Request Functions
+void sendPortStatus();
+bool isPortStatusRequestPending();
+void clearPortStatusRequest();
 
 #endif // MQTT_H

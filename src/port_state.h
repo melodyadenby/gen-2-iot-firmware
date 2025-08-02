@@ -62,7 +62,6 @@ extern struct PortState ports[MAX_PORTS];
 extern bool send_signal_flag;            // flag to send signal string
 extern bool send_heartbeat_flag;         // flag to send signal string
 extern bool send_iot_build_version_flag; // flag to send signal string
-extern char portStatusRequest[10];
 
 // Port Management Functions
 void initializePorts();
@@ -79,6 +78,7 @@ bool isPortCharging(int portNumber);
 bool isPortSecured(int portNumber);
 const char *getPortVIN(int portNumber);
 String getPortStatusSummary(int portNumber);
+char *getPortStatusRange(int startPort, int endPort);
 unsigned long getPortLastPollTime(int portNumber);
 bool hasPortBeenPolled(int portNumber);
 
