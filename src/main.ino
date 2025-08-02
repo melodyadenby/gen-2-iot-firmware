@@ -152,7 +152,6 @@ void loop()
 
   handleSystemLoop();
   checkWatchdog();
-  checkCANHealth();
   feedWatchdog();                 // Feed watchdog at end of successful loop iteration
   ApplicationWatchdog::checkin(); // Feed hardware watchdog
 
@@ -244,7 +243,6 @@ void initializeHardware()
   // Start CAN processing thread
   new Thread("can_thread", canThread);
   new Thread("port_request_thread", port_request_thread);
-  new Thread("can_monitor_thread", canMonitorThread);
   new Thread("can_health_monitor", canHealthMonitorThread);
 
   Serial.printlnf("Hardware initialized");
@@ -757,41 +755,7 @@ void can_interrupt()
 // CAN Error Monitoring and Recovery
 // ========================================
 
-void canMonitorThread()
-{
-  Serial.printlnf("CAN monitor thread started");
 
-  while (true)
-  {
-    // Monitor CAN error rate
-    unsigned long currentTime = millis();
-
-    // Reset error count every minute
-    if (currentTime - last_can_error_time > CAN_ERROR_RESET_INTERVAL)
-    {
-      if (can_error_count > 0)
-      {
-        Serial.printlnf("Resetting CAN error count (was %d)", can_error_count);
-      }
-      can_error_count = 0;
-      last_can_error_time = currentTime;
-    }
-
-    // Check if error rate is too high
-    if (can_error_count > MAX_CAN_ERRORS_PER_MINUTE)
-    {
-      Serial.printlnf(
-          "CAN error rate too high (%d errors/minute), triggering recovery",
-          can_error_count);
-      can_recovery_needed = true;
-    }
-
-    // Feed hardware watchdog during monitoring
-    ApplicationWatchdog::checkin();
-
-    delay(1000); // Check every second
-  }
-}
 
 void performCANRecovery()
 {
@@ -1014,48 +978,6 @@ void resetCANSuccessCounter()
   }
 }
 
-void checkCANHealth()
-{
-  unsigned long currentTime = millis();
-
-  // Check if we have consecutive CAN errors with lower threshold
-  if (canErrorMonitor.consecutiveErrors >= 3)
-  {
-    if (!canErrorMonitor.inRecoveryMode)
-    {
-      Serial.printlnf("CAN Error Threshold Reached: %d consecutive errors",
-                      canErrorMonitor.consecutiveErrors);
-      can_recovery_needed = true;
-      canErrorMonitor.inRecoveryMode = true;
-      canErrorMonitor.lastRecoveryAttempt = currentTime;
-    }
-  }
-
-  // Reset consecutive error count if enough time has passed without errors
-  if (currentTime - canErrorMonitor.lastErrorTime > CAN_ERROR_WINDOW)
-  {
-    if (canErrorMonitor.consecutiveErrors > 0)
-    {
-      Serial.printlnf(
-          "CAN Error Window Expired - Resetting consecutive error count");
-      canErrorMonitor.consecutiveErrors = 0;
-    }
-  }
-
-  // Check for stuck interrupts periodically
-  checkInterruptHealth();
-
-  // Check if we've been in recovery mode too long
-  if (canErrorMonitor.inRecoveryMode &&
-      currentTime - canErrorMonitor.lastRecoveryAttempt >
-          CAN_RECOVERY_DELAY * 2)
-  {
-    Serial.printlnf("CAN Recovery timeout - forcing device reset");
-    delay(100);
-    resetDevice("CAN recovery timeout");
-  }
-}
-
 // ========================================
 // Watchdog Functions
 // ========================================
@@ -1221,11 +1143,55 @@ void canHealthMonitorThread()
     if (currentTime - lastHealthCheck >= HEALTH_CHECK_INTERVAL)
     {
 
+      // Monitor CAN error rate (from old canMonitorThread)
+      if (currentTime - last_can_error_time > CAN_ERROR_RESET_INTERVAL)
+      {
+        if (can_error_count > 0)
+        {
+          Serial.printlnf("Resetting CAN error count (was %d)", can_error_count);
+        }
+        can_error_count = 0;
+        last_can_error_time = currentTime;
+      }
+
+      // Check if error rate is too high
+      if (can_error_count > MAX_CAN_ERRORS_PER_MINUTE)
+      {
+        Serial.printlnf(
+            "CAN error rate too high (%d errors/minute), triggering recovery",
+            can_error_count);
+        can_recovery_needed = true;
+      }
+
       // Check interrupt health
       checkInterruptHealth();
 
       // Check transmission/reception balance
       checkTransmissionReceptionBalance();
+
+      // Check if we have consecutive CAN errors with lower threshold
+      if (canErrorMonitor.consecutiveErrors >= 3)
+      {
+        if (!canErrorMonitor.inRecoveryMode)
+        {
+          Serial.printlnf("CAN Error Threshold Reached: %d consecutive errors",
+                          canErrorMonitor.consecutiveErrors);
+          can_recovery_needed = true;
+          canErrorMonitor.inRecoveryMode = true;
+          canErrorMonitor.lastRecoveryAttempt = currentTime;
+        }
+      }
+
+      // Reset consecutive error count if enough time has passed without errors
+      if (currentTime - canErrorMonitor.lastErrorTime > CAN_ERROR_WINDOW)
+      {
+        if (canErrorMonitor.consecutiveErrors > 0)
+        {
+          Serial.printlnf(
+              "CAN Error Window Expired - Resetting consecutive error count");
+          canErrorMonitor.consecutiveErrors = 0;
+        }
+      }
 
       // Emergency reset if error cascade continues
       if (canErrorMonitor.consecutiveErrors >= 10)
@@ -1235,7 +1201,7 @@ void canHealthMonitorThread()
 
       // Reset if stuck in recovery mode too long
       if (canErrorMonitor.inRecoveryMode &&
-          currentTime - canErrorMonitor.lastRecoveryAttempt > 10000)
+          currentTime - canErrorMonitor.lastRecoveryAttempt > CAN_RECOVERY_DELAY * 2)
       {
         emergencyReset("CAN recovery timeout");
       }
