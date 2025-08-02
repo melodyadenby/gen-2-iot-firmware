@@ -47,6 +47,11 @@ const unsigned long WATCHDOG_TIMEOUT = 30000; // 30 seconds
 unsigned long last_watchdog_feed = 0;
 bool watchdog_enabled = false;
 
+// Interrupt Health Monitoring
+unsigned long lastTransmissionTime = 0;
+bool interruptHealthy = true;
+const unsigned long TX_RX_IMBALANCE_TIMEOUT = 60000; // 1 minute of TX without RX = problem
+
 // CAN Error Monitoring Constants
 const int CAN_ERROR_THRESHOLD = 5;            // Max consecutive errors before recovery
 const unsigned long CAN_ERROR_WINDOW = 10000; // 10 seconds error window
@@ -73,8 +78,20 @@ struct CANErrorMonitor
 
 can_frame messageQueue[50];
 
+// Interrupt monitoring variables
+unsigned long lastInterruptTime = 0;
+unsigned long lastInterruptCheck = 0;
+bool interruptStuckDetected = false;
+const unsigned long INTERRUPT_TIMEOUT = 30000;        // 30 seconds without interrupt
+const unsigned long INTERRUPT_CHECK_INTERVAL = 10000; // Check every 10 seconds
+
 // Global hardware watchdog object
 ApplicationWatchdog *hardwareWatchdog;
+
+// Function declarations
+void checkInterruptHealth();
+void recoverInterruptSystem();
+void checkTransmissionReceptionBalance();
 
 // Hardware watchdog handler
 void hardwareWatchdogHandler()
@@ -218,6 +235,11 @@ void initializeHardware()
 
   pinMode(CAN_INT, INPUT_PULLUP);
   attachInterrupt(CAN_INT, can_interrupt, FALLING);
+
+  // Initialize interrupt health tracking
+  lastInterruptTime = millis();
+  lastInterruptCheck = millis();
+  interruptHealthy = true;
 
   // Start CAN processing thread
   new Thread("can_thread", canThread);
@@ -403,6 +425,8 @@ void handlePortDataRequests()
         // Reset failure count on success
         portFailureCount[current_poll_port] = 0;
         resetCANSuccessCounter();
+        // Track transmission time for health monitoring
+        lastTransmissionTime = millis();
       }
       else
       {
@@ -638,6 +662,10 @@ void processCANMessage(const can_frame &rawMessage)
 
 void can_interrupt()
 {
+  // Track interrupt reception for health monitoring
+  lastInterruptTime = millis();
+  interruptHealthy = true;
+
   // Minimal interrupt handler - just queue the message
   struct can_frame recMsg;
 
@@ -781,6 +809,9 @@ void performCANRecovery()
   queueOverflow = false;
   interrupts();
 
+  // Detach interrupt to prevent issues during recovery
+  detachInterrupt(CAN_INT);
+
   // Update recovery tracking
   canErrorMonitor.recoveryAttempts++;
   canErrorMonitor.inRecoveryMode = true;
@@ -864,6 +895,11 @@ void performCANRecovery()
     resetDevice("MCP2515 mode failed");
     return;
   }
+
+  // Re-enable interrupts after successful controller reset
+  pinMode(CAN_INT, INPUT_PULLUP);
+  attachInterrupt(CAN_INT, can_interrupt, FALLING);
+  Serial.printlnf("CAN interrupt re-enabled on pin %d", CAN_INT);
 
   // Reset all error tracking
   can_error_count = 0;
@@ -1005,6 +1041,9 @@ void checkCANHealth()
       canErrorMonitor.consecutiveErrors = 0;
     }
   }
+
+  // Check for stuck interrupts periodically
+  checkInterruptHealth();
 
   // Check if we've been in recovery mode too long
   if (canErrorMonitor.inRecoveryMode &&
@@ -1182,6 +1221,12 @@ void canHealthMonitorThread()
     if (currentTime - lastHealthCheck >= HEALTH_CHECK_INTERVAL)
     {
 
+      // Check interrupt health
+      checkInterruptHealth();
+
+      // Check transmission/reception balance
+      checkTransmissionReceptionBalance();
+
       // Emergency reset if error cascade continues
       if (canErrorMonitor.consecutiveErrors >= 10)
       {
@@ -1252,5 +1297,107 @@ void canHealthMonitorThread()
     ApplicationWatchdog::checkin();
 
     delay(1000); // Check every second
+  }
+}
+
+void checkInterruptHealth()
+{
+  unsigned long currentTime = millis();
+
+  // Only check every INTERRUPT_CHECK_INTERVAL
+  if (currentTime - lastInterruptCheck < INTERRUPT_CHECK_INTERVAL)
+  {
+    return;
+  }
+  lastInterruptCheck = currentTime;
+
+  // Check if we've received interrupts recently
+  unsigned long timeSinceLastInterrupt = currentTime - lastInterruptTime;
+
+  // If we haven't received interrupts in a while, but CAN is supposed to be working
+  if (timeSinceLastInterrupt > INTERRUPT_TIMEOUT && !CAN_ERROR && !can_recovery_needed)
+  {
+    // Check if we can still send (TX working) but not receive (RX/interrupt dead)
+    Serial.printlnf("WARNING: No CAN interrupts for %lu ms - possible interrupt failure",
+                    timeSinceLastInterrupt);
+
+    // Check MCP2515 interrupt flags to see if they're stuck
+    uint8_t intFlags = mcp2515.getInterrupts();
+    Serial.printlnf("MCP2515 interrupt flags: 0x%02X", intFlags);
+
+    if (intFlags != 0)
+    {
+      Serial.printlnf("CRITICAL: MCP2515 has pending interrupts but interrupt handler not called!");
+      Serial.printlnf("This indicates interrupt pin or attachInterrupt failure");
+
+      // Try to recover the interrupt system
+      recoverInterruptSystem();
+    }
+    else
+    {
+      Serial.printlnf("MCP2515 shows no pending interrupts - may be normal if bus is quiet");
+      // Update last interrupt time to prevent false alarms during quiet periods
+      lastInterruptTime = currentTime - (INTERRUPT_TIMEOUT / 2);
+    }
+  }
+}
+
+void recoverInterruptSystem()
+{
+  Serial.printlnf("=== ATTEMPTING INTERRUPT SYSTEM RECOVERY ===");
+
+  // Detach current interrupt
+  detachInterrupt(CAN_INT);
+  delay(100);
+
+  // Clear any pending MCP2515 interrupts
+  mcp2515.clearInterrupts();
+  delay(50);
+
+  // Reconfigure the interrupt pin
+  pinMode(CAN_INT, INPUT_PULLUP);
+  delay(50);
+
+  // Re-attach interrupt
+  attachInterrupt(CAN_INT, can_interrupt, FALLING);
+  delay(100);
+
+  // Reset interrupt health tracking
+  lastInterruptTime = millis();
+  interruptHealthy = true;
+
+  Serial.printlnf("Interrupt system recovery completed");
+  Serial.printlnf("Re-attached interrupt on pin %d", CAN_INT);
+
+  // Test interrupt by reading any pending messages
+  uint8_t intFlags = mcp2515.getInterrupts();
+  if (intFlags != 0)
+  {
+    Serial.printlnf("Post-recovery: MCP2515 interrupt flags: 0x%02X", intFlags);
+  }
+}
+
+void checkTransmissionReceptionBalance()
+{
+  unsigned long currentTime = millis();
+
+  // Check if we're actively transmitting but not receiving
+  unsigned long timeSinceLastTX = currentTime - lastTransmissionTime;
+  unsigned long timeSinceLastRX = currentTime - lastInterruptTime;
+
+  // If we've transmitted recently but haven't received anything in much longer
+  if (timeSinceLastTX < TX_RX_IMBALANCE_TIMEOUT &&
+      timeSinceLastRX > TX_RX_IMBALANCE_TIMEOUT &&
+      !CAN_ERROR && !can_recovery_needed)
+  {
+
+    Serial.printlnf("CRITICAL: TX/RX imbalance detected!");
+    Serial.printlnf("Last transmission: %lu ms ago", timeSinceLastTX);
+    Serial.printlnf("Last reception: %lu ms ago", timeSinceLastRX);
+    Serial.printlnf("This suggests interrupt system failure while TX still works");
+
+    // This is exactly the scenario you described - sending works but receiving doesn't
+    Serial.printlnf("Attempting interrupt system recovery...");
+    recoverInterruptSystem();
   }
 }

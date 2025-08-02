@@ -5,7 +5,7 @@
 #include "Particle.h"
 #include "config.h"
 
-const unsigned long PORT_CHECK_INTERVAL = 10 * SEC_TO_MS_MULTIPLIER;
+const unsigned long PORT_CHECK_INTERVAL = 60 * SEC_TO_MS_MULTIPLIER;
 const unsigned long POLL_STAGGER_DELAY = 1000; // 1s between requests
 
 const int VIN_LENGTH = 16;
