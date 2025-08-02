@@ -92,6 +92,8 @@ void initializeHardware()
     pinMode(CAN_INT, INPUT_PULLUP);
     attachInterrupt(CAN_INT, can_interrupt, FALLING);
 
+    new Thread("can_thread", canThread);
+
     Serial.printlnf("Hardware initialized");
 }
 
@@ -156,6 +158,14 @@ void handleSystemLoop()
     updateSystemStatus();
 }
 
+void canThread()
+{
+    while (true)
+    {
+        handleCanQueue();
+    }
+}
+
 void handleCredentials()
 {
     if (areCredentialsValid())
@@ -184,6 +194,110 @@ void updateSystemStatus()
         setLightBlue(); // Fetching credentials
     }
 }
+void handleCanQueue()
+{
+    int messagesProcessed = 0;
+    const int MAX_MESSAGES_PER_LOOP =
+        8; // Process fewer messages per loop for stability
+    int queueMessageCount = 0;
+
+    // Check and handle queue overflow
+    if (queueOverflow)
+    {
+        Serial.println(
+            "WARNING: CAN message queue overflow detected - clearing queue");
+        noInterrupts();
+        queueHead = 0;
+        queueTail = 0;
+        messageCount = 0;
+        queueOverflow = false;
+        interrupts();
+        // clearAllCANBuffers();
+    }
+
+    // Make a safe local copy of the count with interrupts disabled
+    noInterrupts();
+    queueMessageCount =
+        (messageCount > CAN_QUEUE_SIZE) ? CAN_QUEUE_SIZE : messageCount;
+    interrupts();
+
+    // Prevent processing if we're approaching a loop timeout
+    unsigned long processingStartTime = millis();
+    const unsigned long MAX_PROCESSING_TIME =
+        3000; // Max 3 seconds for CAN processing
+
+    while (queueMessageCount > 0 &&
+           messagesProcessed < MAX_MESSAGES_PER_LOOP)
+    {
+        // Check if we're taking too long
+        if (millis() - processingStartTime > MAX_PROCESSING_TIME)
+        {
+            Serial.println(
+                "WARNING: Breaking CAN processing loop due to timeout");
+            break;
+        }
+
+        can_frame msg;
+        bool validMessage = false;
+
+        noInterrupts(); // Critical section for accessing shared variables
+        // Only dequeue if there are still messages
+        if (messageCount > 0)
+        {
+            // Validate queue indices are in valid range before accessing array
+            if (queueTail < CAN_QUEUE_SIZE)
+            {
+                memcpy(&msg, &canMessageQueue[queueTail], sizeof(can_frame));
+                queueTail = (queueTail + 1) % CAN_QUEUE_SIZE;
+                messageCount--;
+                queueMessageCount--;
+                validMessage = true;
+            }
+            else
+            {
+                // Invalid queue state detected, reset indices
+                queueTail = 0;
+                queueHead = 0;
+                messageCount = 0;
+                queueMessageCount = 0;
+                Serial.println(
+                    "ERROR: Invalid queue indices detected - resetting queue");
+            }
+
+            // Track statistics (moved from interrupt handler)
+            incrementMessageCounter();
+        }
+        else
+        {
+            // Somehow the count changed, break out
+            queueMessageCount = 0;
+        }
+        interrupts();
+
+        // Now safely process the message in main loop context
+        if (validMessage)
+        {
+            receiveMessage(msg);
+            messagesProcessed++;
+        }
+
+        // Yield more frequently (every 2 messages instead of 3)
+        if (messagesProcessed % 2 == 0)
+        {
+            Particle.process();
+        }
+    }
+}
+void receiveMessage(can_frame recMsg)
+{
+    int addr = recMsg.can_id;
+    if (addr <= 0 || addr > MAX_PORTS)
+    {
+        return;
+    }
+    Serial.printlnf("MESSAGE FROM ADDRESS: %d", recMsg.can_id);
+    Serial.printlnf("%s", recMsg.data);
+}
 
 void can_interrupt()
 {
@@ -198,8 +312,34 @@ void can_interrupt()
 
     if (readin == ERROR_OK)
     {
-        Serial.printlnf("CAN message received");
-        Serial.printlnf("Data: %s", (char *)recMsg.data);
+        if (messageCount < CAN_QUEUE_SIZE - 1 &&
+            queueHead < CAN_QUEUE_SIZE)
+        { // Leave one slot as safety margin and
+          // validate index
+            // Copy the message to the queue without any processing
+            memcpy(&canMessageQueue[queueHead], &recMsg, sizeof(can_frame));
+            queueHead = (queueHead + 1) % CAN_QUEUE_SIZE;
+
+            // Protect against overflow
+            if (messageCount < UINT16_MAX)
+            {
+                messageCount++;
+            }
+        }
+        else
+        {
+            // Queue is full or index invalid - set overflow flag and increment
+            // counter
+            queueOverflow = true;
+
+            // Reset head/tail if they're out of bounds (corruption detection)
+            if (queueHead >= CAN_QUEUE_SIZE || queueTail >= CAN_QUEUE_SIZE)
+            {
+                queueHead = 0;
+                queueTail = 0;
+                messageCount = 0;
+            }
+        }
     }
     else if (readin == MCP2515::ERROR_FAIL)
     {
