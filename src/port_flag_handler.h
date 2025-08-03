@@ -241,9 +241,16 @@ private:
   void handleCommandError(int port, const char *command, int errorCode);
 
   /**
-   * Check if enough time has passed for retry
+   * Check for partial VIN timeout and restart VIN request if needed
+   * @param port Port number
+   * @param state Port state pointer
+   */
+  void checkVINTimeout(int port, PortState *state);
+
+  /**
+   * Check if a command can be retried based on timing
    * @param lastAttemptTime Last attempt timestamp
-   * @param retryInterval Minimum retry interval in milliseconds
+   * @param retryInterval Retry interval in milliseconds
    * @return true if retry is allowed
    */
   bool canRetryCommand(unsigned long lastAttemptTime,

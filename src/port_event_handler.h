@@ -13,8 +13,7 @@ class PortStateManager;
  * Handles business logic for port events triggered by CAN messages
  * Separates CAN message parsing from port state management
  */
-class PortEventHandler
-{
+class PortEventHandler {
 private:
   PortStateManager *portStateManager;
 
@@ -42,6 +41,12 @@ public:
    * @param message Parsed VIN message
    */
   void handleVINMessage(const ParsedCANMessage &message);
+
+  /**
+   * Handle spontaneous VIN messages (K) that reset session state
+   * @param message Parsed VIN message
+   */
+  void handleSpontaneousVINMessage(const ParsedCANMessage &message);
 
   /**
    * Handle temperature data messages (T)

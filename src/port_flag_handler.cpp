@@ -36,6 +36,9 @@ void PortFlagHandler::processPortFlags(int port)
     return;
   }
 
+  // Check for partial VIN timeout
+  checkVINTimeout(port, state);
+
   // logFlagActivity(port, "PROCESSING", "Starting flag processing");
 
   // Process command flags in priority order
@@ -622,8 +625,34 @@ void PortFlagHandler::updateCommandTimeout(int port, int decrement)
   // This function is no longer needed since we use absolute timestamps
   // Keeping for compatibility but making it a no-op
 }
-int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
-                                     int timeout)
+
+void PortFlagHandler::checkVINTimeout(int port, PortState *state)
+{
+  const unsigned long VIN_TIMEOUT = 30000; // 30 seconds
+
+  // Only check if we have a partial VIN
+  if (strlen(state->VIN) > 0 && strlen(state->VIN) < VIN_LENGTH)
+  {
+    unsigned long timeSinceLastUpdate =
+        millis() - state->send_vin_request_timer;
+    if (timeSinceLastUpdate > VIN_TIMEOUT)
+    {
+      Serial.printlnf("Port %d - Partial VIN timeout after %lu ms, clearing "
+                      "and restarting",
+                      port, timeSinceLastUpdate);
+
+      // Clear partial VIN and restart the process
+      memset(state->VIN, 0, sizeof(state->VIN));
+      state->vin_request_flag = true;
+      state->send_vin_request_timer = millis();
+
+      Serial.printlnf("Port %d - VIN timeout recovery: requesting new VIN",
+                      port);
+    }
+  }
+}
+
+int PortFlagHandler::portWriteParams(int port, char volts[], char amps[], int timeout)
 {
   Serial.printf("Sending charge params - volts: %s, amps: %s\n", volts, amps);
 
@@ -632,7 +661,6 @@ int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
   {
     return -1;
   }
-
   // Set absolute timeout timestamp (current time + timeout duration)
   portState->command_timeout = millis() + timeout;
 
@@ -667,7 +695,8 @@ int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
   return result;
 }
 
-int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout)
+int PortFlagHandler::portWrite(int port, char cmd, char *variant,
+                               int timeout)
 {
   struct PortState *portState = getPortState(port);
 
@@ -710,11 +739,12 @@ int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout)
     reqMsg.data[2 + portStrLen] = ',';
 
     // Calculate max safe length for variant
-    size_t maxVariantLen =
-        sizeof(reqMsg.data) - (3 + portStrLen) - 1; // -1 for null terminator
+    size_t maxVariantLen = sizeof(reqMsg.data) - (3 + portStrLen) -
+                           1; // -1 for null terminator
 
     // Use our safe string copy function
-    safeStrCopy((char *)&reqMsg.data[3 + portStrLen], variant, maxVariantLen);
+    safeStrCopy((char *)&reqMsg.data[3 + portStrLen], variant,
+                maxVariantLen);
 
     // Ensure null-termination of CAN message
     reqMsg.data[7] = '\0';
@@ -743,7 +773,8 @@ int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout)
   // Check for send errors
   if (result != ERROR_OK)
   {
-    Serial.printlnf("CAN send error: %d when sending to port %d", result, port);
+    Serial.printlnf("CAN send error: %d when sending to port %d", result,
+                    port);
   }
 
   return result;
@@ -801,8 +832,8 @@ bool PortFlagHandler::sendGetPortData(int addr)
   {
     char error_buff[20];
     ReturnErrorString(result, error_buff, 20);
-    Serial.printlnf("Failed to send data request to port %d, error: %s", addr,
-                    error_buff);
+    Serial.printlnf("Failed to send data request to port %d, error: %s",
+                    addr, error_buff);
     return false;
   }
 

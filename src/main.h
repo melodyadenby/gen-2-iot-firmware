@@ -5,7 +5,10 @@
 SYSTEM_THREAD(ENABLED);
 SYSTEM_MODE(AUTOMATIC);
 
-SerialLogHandler logHandler(LOG_LEVEL_WARN);
+SerialLogHandler logHandler(LOG_LEVEL_INFO);
+
+retained uint8_t retainedLogs[2048];
+
 // Basic includes only to avoid circular dependencies
 #include "Arduino.h"
 #include "Particle.h"
@@ -21,7 +24,7 @@ class PortFlagHandler;
 #define CAN_INT A4
 extern char can_err_msg[200];
 extern bool CAN_ERROR;
-#define CAN_QUEUE_SIZE 64 // Increased buffer size to reduce overflow chance
+#define CAN_QUEUE_SIZE 64            // Increased buffer size to reduce overflow chance
 #define CAN_MAX_CONSECUTIVE_ERRORS 3 // Number of errors before controller reset
 
 // CAN message queue variables (defined in main.ino)

@@ -22,10 +22,18 @@ void PortEventHandler::handleCANMessage(const ParsedCANMessage &message) {
   case CAN_MSG_STATUS:
     handleStatusMessage(message);
     break;
-
-  case CAN_MSG_VIN:
-    handleVINMessage(message);
-    break;
+  case CAN_MSG_VIN: {
+    // Check if this is a spontaneous VIN (not requested AND VIN buffer already
+    // full)
+    PortState *state = getPortState(message.sourcePort);
+    if (state && !state->vin_request_flag && strlen(state->VIN) >= VIN_LENGTH) {
+      // Spontaneous VIN with full buffer - port is starting new session
+      handleSpontaneousVINMessage(message);
+    } else {
+      // Requested VIN or partial VIN continuation - normal response
+      handleVINMessage(message);
+    }
+  } break;
 
   case CAN_MSG_TEMPERATURE:
     handleTemperatureMessage(message);
@@ -141,6 +149,41 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
   }
 }
 
+void PortEventHandler::handleSpontaneousVINMessage(
+    const ParsedCANMessage &message) {
+  int port = message.sourcePort;
+  PortState *state = getPortState(port);
+  if (!state) {
+    return;
+  }
+
+  Serial.printlnf(
+      "Port %d - Spontaneous VIN with full buffer, resetting session state",
+      port);
+
+  // Clear existing VIN and charging state (new session starting)
+  memset(state->VIN, 0, sizeof(state->VIN));
+  state->charging = false;
+  state->charge_successful = false;
+  state->check_charge_status = false;
+  state->send_charge_flag = false;
+  state->awaiting_cloud_vin_resp = false;
+  state->cloud_vin_resp_timer = 0;
+  state->vin_request_flag = false;
+
+  // Process the VIN message normally
+  handleVINMessage(message);
+
+  // But always send to cloud regardless of charging state
+  if (strlen(state->VIN) >= VIN_LENGTH) {
+    Serial.printlnf("Port %d - Forcing cloud transmission for spontaneous VIN",
+                    port);
+    state->send_vin_to_cloud_flag = true;
+    state->awaiting_cloud_vin_resp = true;
+    state->cloud_vin_resp_timer = millis();
+  }
+}
+
 void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
   int port = message.sourcePort;
   PortState *state = getPortState(port);
@@ -148,16 +191,31 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
     return;
   }
 
+  // Check for partial VIN timeout (30 seconds)
+  const unsigned long VIN_TIMEOUT = 30000;
+  if (strlen(state->VIN) > 0 && strlen(state->VIN) < VIN_LENGTH) {
+    unsigned long timeSinceLastChunk = millis() - state->send_vin_request_timer;
+    if (timeSinceLastChunk > VIN_TIMEOUT) {
+      Serial.printlnf("Port %d - Partial VIN timeout, clearing and restarting",
+                      port);
+      memset(state->VIN, 0, sizeof(state->VIN));
+      state->vin_request_flag = true; // Request VIN again
+      state->send_vin_request_timer = millis();
+    }
+  }
+
   // If this is the first chunk of a new VIN sequence, clear the buffer
   if (strlen(state->VIN) == 0) {
     Serial.printlnf("Port %d - Starting VIN collection", port);
+    state->send_vin_request_timer =
+        millis(); // Update timer for timeout tracking
   }
 
-  Serial.printlnf("=== VIN PROCESSING DEBUG ===");
-  Serial.printlnf("Port %d - Raw chunk received: '%s'", port,
-                  message.vinData.vin);
-  Serial.printlnf("Port %d - Current VIN before: '%s' (len=%d)", port,
-                  state->VIN, strlen(state->VIN));
+  // Serial.printlnf("=== VIN PROCESSING DEBUG ===");
+  // Serial.printlnf("Port %d - Raw chunk received: '%s'", port,
+  //                 message.vinData.vin);
+  // Serial.printlnf("Port %d - Current VIN before: '%s' (len=%d)", port,
+  //                 state->VIN, strlen(state->VIN));
 
   // Concatenate VIN chunks instead of overwriting
   size_t currentLen = strlen(state->VIN);
@@ -171,13 +229,13 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
   // Only append if there's space in the VIN buffer
   if (chunkLen <= availableSpace) {
     strcat(state->VIN, message.vinData.vin);
-    Serial.printlnf("Port %d - Concatenation successful", port);
+    // Serial.printlnf("Port %d - Concatenation successful", port);
   } else {
-    Serial.printlnf("Port %d - WARNING: Not enough space for chunk!", port);
+    // Serial.printlnf("Port %d - WARNING: Not enough space for chunk!", port);
   }
 
-  Serial.printlnf("Port %d - VIN after concatenation: '%s' (len=%d)", port,
-                  state->VIN, strlen(state->VIN));
+  // Serial.printlnf("Port %d - VIN after concatenation: '%s' (len=%d)", port,
+  // state->VIN, strlen(state->VIN));
 
   // Check if VIN is complete (16 characters for full VIN)
   if (strlen(state->VIN) >= VIN_LENGTH) {
@@ -186,7 +244,7 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
     state->vin_request_flag = false;
 
     // Only send to cloud if vehicle is not already charging (prevents cloud
-    // spam on system restart)
+    // spam on system restart) - unless this is a spontaneous VIN
     if (!state->charging) {
       Serial.printlnf("Port %d - Setting flags for cloud transmission", port);
       state->send_vin_to_cloud_flag = true;
@@ -201,7 +259,7 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
     Serial.printlnf("Port %d - PARTIAL VIN: %s (%d/%d chars)", port, state->VIN,
                     strlen(state->VIN), VIN_LENGTH);
   }
-  Serial.printlnf("=== END VIN DEBUG ===");
+  // Serial.printlnf("=== END VIN DEBUG ===");
 }
 
 void PortEventHandler::handleTemperatureMessage(

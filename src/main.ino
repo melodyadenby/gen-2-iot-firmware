@@ -10,6 +10,7 @@
 #include "main.h"
 #include "mqtt.h"
 #include "port_event_handler.h"
+#include "DeviceInfoLedger.h"
 #include "port_flag_handler.h"
 #include "port_state.h"
 #include "utils.h"
@@ -131,6 +132,8 @@ void setup()
 
 void loop()
 {
+  ApplicationWatchdog::checkin(); // Feed hardware watchdog
+  DeviceInfoLedger::instance().loop();
 
   static unsigned long lastLoopTime = 0;
   unsigned long currentTime = millis();
@@ -143,7 +146,6 @@ void loop()
   }
   lastLoopTime = currentTime;
   handleSystemLoop();
-  ApplicationWatchdog::checkin(); // Feed hardware watchdog
 
   // Small delay to prevent CPU overload during error conditions
   if (CAN_ERROR || can_recovery_needed)
@@ -166,14 +168,15 @@ void initializeArchitecture()
 void initializeSystem()
 {
   Serial.begin(115200);
-  while (!Serial)
+  while (!Serial.isConnected())
     ;
-  delay(2000);
+  // delay(2000);
 
   // Initialize all subsystems
   initializePorts();
   initializeCredentials();
   initializeMQTT();
+  initializeLedger();
 
   Particle.variable("CAN_ERROR", CAN_ERROR);
   Particle.variable("pub_id", MANUAL_MODE, STRING);
@@ -186,7 +189,20 @@ void initializeSystem()
   Serial.printlnf("Environment: %s", getCurrentEnvironment());
   Serial.printlnf("System initialized");
 }
+void initializeLedger()
+{
 
+  // This sets up remote configuration
+  DeviceConfigLedger::instance()
+      .withConfigDefaultLedgerName("device-info-defaults")
+      .withConfigDeviceLedgerName("device-info-config")
+      .setup();
+  // This sets up the device information in ledger
+  DeviceInfoLedger::instance()
+      .withInfoLedgerName("device-info")
+      .withRetainedBuffer(retainedLogs, sizeof(retainedLogs))
+      .setup();
+}
 void initializeHardware()
 {
   // Setup ring light
