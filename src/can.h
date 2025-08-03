@@ -17,6 +17,9 @@ MCP2515::ERROR readCanMessage(struct can_frame *msg);
 uint8_t sendCanMessage(can_frame msg);
 void clearCanInterrupts();
 void ReturnErrorString(uint8_t err, char *ret, size_t ret_size);
+
+uint8_t getCANErrorFlags(bool debugLog);
+void printCANErrorState();
 // int initCAN();
 void incrementMessageCounter();
 

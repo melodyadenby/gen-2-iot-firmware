@@ -1099,12 +1099,12 @@ void emergencyReset(const char *reason)
 void canHealthMonitorThread()
 {
   static unsigned long lastHealthCheck = 0;
+  uint8_t currentFlags = 0;
   const unsigned long HEALTH_CHECK_INTERVAL =
       1000;                                      // Check every second during crisis
   const unsigned long MAIN_LOOP_TIMEOUT = 20000; // 20 seconds max
 
   Serial.printlnf("CAN Health Monitor thread started");
-
   while (true)
   {
     unsigned long currentTime = millis();
@@ -1113,7 +1113,8 @@ void canHealthMonitorThread()
     if (currentTime - lastHealthCheck >= HEALTH_CHECK_INTERVAL)
     {
 
-      // Monitor CAN error rate (from old canMonitorThread)
+      currentFlags = getCANErrorFlags(true);
+      // Monitor CAN error rate
       if (currentTime - last_can_error_time > CAN_ERROR_RESET_INTERVAL)
       {
         if (can_error_count > 0)
