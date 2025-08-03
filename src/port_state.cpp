@@ -1,5 +1,6 @@
 #include "port_state.h"
 #include "Particle.h"
+#include "can.h"
 #include "config.h"
 #include "mqtt.h"
 #include "utils.h"
@@ -55,6 +56,12 @@ void resetPortState(int portNumber)
 
   int index = portNumber - 1; // Convert to 0-based index
   struct PortState *port = &ports[index];
+
+  // Initialize message queue
+  port->queueHead = 0;
+  port->queueTail = 0;
+  port->queueCount = 0;
+  memset(port->messageQueue, 0, sizeof(port->messageQueue));
 
   // Reset all boolean flags
   port->DID_PORT_CHECK = false;
@@ -349,4 +356,229 @@ char *getPortStatusRange(int startPort, int endPort)
 
   Serial.printlnf("Port status range %d-%d: %s", startPort, endPort, buffer);
   return buffer;
+}
+
+// Message delay management functions
+bool canSendMessageToPort(int portNumber)
+{
+  PortState *state = getPortState(portNumber);
+  if (!state)
+  {
+    return false;
+  }
+
+  unsigned long currentTime = millis();
+  unsigned long timeSinceLastMessage = currentTime - state->last_message_time;
+
+  // If no message has been sent yet (last_message_time = 0) or enough time has
+  // passed
+  bool canSend = (state->last_message_time == 0 ||
+                  timeSinceLastMessage >= SUBSEQUENT_MSG_DELAY);
+
+  if (!canSend)
+  {
+    Serial.printlnf(
+        "Port %d delay check: last_msg=%lu ms ago, need=%lu ms, waiting=%lu ms",
+        portNumber, timeSinceLastMessage, SUBSEQUENT_MSG_DELAY,
+        SUBSEQUENT_MSG_DELAY - timeSinceLastMessage);
+  }
+
+  return canSend;
+}
+
+void markMessageSentToPort(int portNumber)
+{
+  PortState *state = getPortState(portNumber);
+  if (state)
+  {
+    unsigned long oldTime = state->last_message_time;
+    state->last_message_time = millis();
+    Serial.printlnf(
+        "Port %d message timestamp updated: %lu -> %lu (gap: %lu ms)",
+        portNumber, oldTime, state->last_message_time,
+        oldTime > 0 ? state->last_message_time - oldTime : 0);
+  }
+}
+
+unsigned long getTimeSinceLastMessage(int portNumber)
+{
+  PortState *state = getPortState(portNumber);
+  if (!state || state->last_message_time == 0)
+  {
+    return SUBSEQUENT_MSG_DELAY; // Return a value >= delay if no previous
+                                 // message
+  }
+
+  unsigned long currentTime = millis();
+  return currentTime - state->last_message_time;
+}
+
+// Message queue management functions
+bool queueMessageForPort(int portNumber, char command, const char *variant,
+                         int timeout)
+{
+  PortState *state = getPortState(portNumber);
+  if (!state)
+  {
+    Serial.printlnf("Cannot queue message for invalid port %d", portNumber);
+    return false;
+  }
+
+  // Check if queue is full
+  if (state->queueCount >= MAX_QUEUED_MESSAGES_PER_PORT)
+  {
+    Serial.printlnf("Message queue full for port %d, dropping message",
+                    portNumber);
+    return false;
+  }
+
+  // Add message to queue
+  QueuedMessage *msg = &state->messageQueue[state->queueTail];
+  msg->command = command;
+  msg->timeout = timeout;
+  msg->queueTime = millis();
+  msg->hasVariant = (variant != nullptr);
+
+  if (variant != nullptr)
+  {
+    safeStrCopy(msg->variant, variant, sizeof(msg->variant));
+  }
+  else
+  {
+    msg->variant[0] = '\0';
+  }
+
+  // Update queue indices
+  state->queueTail = (state->queueTail + 1) % MAX_QUEUED_MESSAGES_PER_PORT;
+  state->queueCount++;
+
+  Serial.printlnf(
+      "QUEUED: Port %d message '%c' (queue size: %d, delay needed: %lu ms)",
+      portNumber, command, state->queueCount,
+      canSendMessageToPort(portNumber)
+          ? 0
+          : SUBSEQUENT_MSG_DELAY - getTimeSinceLastMessage(portNumber));
+  return true;
+}
+
+bool hasQueuedMessages(int portNumber)
+{
+  PortState *state = getPortState(portNumber);
+  return state && (state->queueCount > 0);
+}
+
+bool sendNextQueuedMessage(int portNumber)
+{
+  PortState *state = getPortState(portNumber);
+  if (!state || state->queueCount == 0)
+  {
+    return false;
+  }
+
+  // Check if we can send to this port yet
+  if (!canSendMessageToPort(portNumber))
+  {
+    return false; // Not ready yet, try again later
+  }
+
+  // Get the next message
+  QueuedMessage *msg = &state->messageQueue[state->queueHead];
+
+  Serial.printlnf("Sending queued message '%c' to port %d", msg->command,
+                  portNumber);
+
+  // Build and send CAN message directly to avoid circular dependency
+  struct can_frame reqMsg;
+  memset(reqMsg.data, 0, sizeof(reqMsg.data));
+
+  reqMsg.can_id = portNumber;
+  reqMsg.data[0] = (unsigned char)msg->command;
+  reqMsg.data[1] = ',';
+
+  // Convert port to string
+  char portStr[3];
+  snprintf(portStr, sizeof(portStr), "%d", portNumber);
+  size_t portStrLen = strlen(portStr);
+
+  // Copy port number string into message
+  for (size_t i = 0; i < portStrLen && i < 2; i++)
+  {
+    reqMsg.data[2 + i] = portStr[i];
+  }
+
+  if (msg->hasVariant)
+  {
+    // Add comma separator after port number
+    reqMsg.data[2 + portStrLen] = ',';
+
+    // Add variant
+    size_t maxVariantLen = sizeof(reqMsg.data) - (3 + portStrLen) - 1;
+    safeStrCopy((char *)&reqMsg.data[3 + portStrLen], msg->variant,
+                maxVariantLen);
+    reqMsg.data[7] = '\0';
+    reqMsg.can_dlc = 8;
+  }
+  else
+  {
+    // Null-pad the remaining bytes
+    for (size_t i = 2 + portStrLen; i < 8; i++)
+    {
+      reqMsg.data[i] = '\0';
+    }
+    reqMsg.can_dlc = 8;
+  }
+
+  // Send the CAN message
+  int result = sendCanMessage(reqMsg);
+
+  if (result == ERROR_OK)
+  {
+    markMessageSentToPort(portNumber);
+    Serial.printlnf("DEQUEUED: Port %d message '%c' sent successfully",
+                    portNumber, msg->command);
+  }
+  else
+  {
+    Serial.printlnf("DEQUEUE_FAILED: Port %d message '%c' failed, error: %d",
+                    portNumber, msg->command, result);
+  }
+
+  // Remove message from queue regardless of send result
+  state->queueHead = (state->queueHead + 1) % MAX_QUEUED_MESSAGES_PER_PORT;
+  state->queueCount--;
+
+  Serial.printlnf("Message processed for port %d, queue size now: %d",
+                  portNumber, state->queueCount);
+  return (result == ERROR_OK);
+}
+
+void processPortMessageQueues()
+{
+  // Process queues for all ports
+  for (int port = 1; port <= MAX_PORTS; port++)
+  {
+    if (hasQueuedMessages(port))
+    {
+      sendNextQueuedMessage(port);
+    }
+  }
+}
+
+int getQueuedMessageCount(int portNumber)
+{
+  PortState *state = getPortState(portNumber);
+  return state ? state->queueCount : 0;
+}
+
+void clearPortMessageQueue(int portNumber)
+{
+  PortState *state = getPortState(portNumber);
+  if (state)
+  {
+    state->queueHead = 0;
+    state->queueTail = 0;
+    state->queueCount = 0;
+    memset(state->messageQueue, 0, sizeof(state->messageQueue));
+    Serial.printlnf("Cleared message queue for port %d", portNumber);
+  }
 }

@@ -154,6 +154,17 @@ public:
   int sendPortCommand(int port, char command, const char *variant, int timeout);
 
   /**
+   * Send CAN command to port with delay checking and queuing
+   * @param port Target port number
+   * @param command Command character
+   * @param variant Optional variant parameter
+   * @param timeout Command timeout in seconds
+   * @return Error code (ERROR_OK on success)
+   */
+  int sendPortCommandWithDelay(int port, char command, const char *variant,
+                               int timeout);
+
+  /**
    * Send charging parameters to port
    * @param port Target port number
    * @param volts Voltage parameter

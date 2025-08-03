@@ -488,7 +488,51 @@ int PortFlagHandler::sendPortCommand(int port, char command,
     return -1;
   }
 
-  return portWrite(port, command, const_cast<char *>(variant), timeout);
+  return sendPortCommandWithDelay(port, command, variant, timeout);
+}
+
+int PortFlagHandler::sendPortCommandWithDelay(int port, char command,
+                                              const char *variant,
+                                              int timeout)
+{
+  if (!isValidPort(port))
+  {
+    return -1;
+  }
+
+  // Check if we can send immediately
+  if (canSendMessageToPort(port))
+  {
+    Serial.printlnf("Sending immediate message '%c' to port %d", command, port);
+    int result = portWrite(port, command, const_cast<char *>(variant), timeout);
+    if (result == ERROR_OK)
+    {
+      markMessageSentToPort(port);
+    }
+    return result;
+  }
+  else
+  {
+    // Queue the message for later
+    unsigned long timeSinceLastMsg = getTimeSinceLastMessage(port);
+    unsigned long timeToWait = SUBSEQUENT_MSG_DELAY - timeSinceLastMsg;
+
+    Serial.printlnf("Port %d not ready (last msg %lu ms ago, need %lu ms "
+                    "delay), queueing message '%c'",
+                    port, timeSinceLastMsg, SUBSEQUENT_MSG_DELAY, command);
+
+    if (queueMessageForPort(port, command, variant, timeout))
+    {
+      Serial.printlnf("Message queued for port %d, will retry in %lu ms", port,
+                      timeToWait);
+      return ERROR_OK; // Queued successfully
+    }
+    else
+    {
+      Serial.printlnf("Failed to queue message for port %d", port);
+      return -1; // Queue full or error
+    }
+  }
 }
 
 int PortFlagHandler::sendChargingParams(int port, const char *volts,
@@ -652,7 +696,8 @@ void PortFlagHandler::checkVINTimeout(int port, PortState *state)
   }
 }
 
-int PortFlagHandler::portWriteParams(int port, char volts[], char amps[], int timeout)
+int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
+                                     int timeout)
 {
   Serial.printf("Sending charge params - volts: %s, amps: %s\n", volts, amps);
 
@@ -661,6 +706,18 @@ int PortFlagHandler::portWriteParams(int port, char volts[], char amps[], int ti
   {
     return -1;
   }
+
+  // Check delay before sending charge parameters
+  if (!canSendMessageToPort(port))
+  {
+    unsigned long timeSinceLastMsg = getTimeSinceLastMessage(port);
+    unsigned long timeToWait = SUBSEQUENT_MSG_DELAY - timeSinceLastMsg;
+    Serial.printlnf(
+        "Port %d not ready for charge params (last msg %lu ms ago), deferring",
+        port, timeSinceLastMsg);
+    return -2; // Special return code indicating delay needed
+  }
+
   // Set absolute timeout timestamp (current time + timeout duration)
   portState->command_timeout = millis() + timeout;
 
@@ -692,15 +749,19 @@ int PortFlagHandler::portWriteParams(int port, char volts[], char amps[], int ti
   {
     Serial.printlnf("CAN Error in portWriteParams: %d", result);
   }
+  else
+  {
+    // Mark message as sent if successful
+    markMessageSentToPort(port);
+  }
   return result;
 }
 
-int PortFlagHandler::portWrite(int port, char cmd, char *variant,
-                               int timeout)
+int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout)
 {
   struct PortState *portState = getPortState(port);
 
-  Serial.printlnf("portWriteNew: port=%d, cmd=%c", port, cmd);
+  Serial.printlnf("portWrite: port=%d, cmd=%c", port, cmd);
 
   struct can_frame reqMsg;
   if (port < 1 || port > MAX_PORTS)
@@ -739,12 +800,11 @@ int PortFlagHandler::portWrite(int port, char cmd, char *variant,
     reqMsg.data[2 + portStrLen] = ',';
 
     // Calculate max safe length for variant
-    size_t maxVariantLen = sizeof(reqMsg.data) - (3 + portStrLen) -
-                           1; // -1 for null terminator
+    size_t maxVariantLen =
+        sizeof(reqMsg.data) - (3 + portStrLen) - 1; // -1 for null terminator
 
     // Use our safe string copy function
-    safeStrCopy((char *)&reqMsg.data[3 + portStrLen], variant,
-                maxVariantLen);
+    safeStrCopy((char *)&reqMsg.data[3 + portStrLen], variant, maxVariantLen);
 
     // Ensure null-termination of CAN message
     reqMsg.data[7] = '\0';
@@ -773,8 +833,7 @@ int PortFlagHandler::portWrite(int port, char cmd, char *variant,
   // Check for send errors
   if (result != ERROR_OK)
   {
-    Serial.printlnf("CAN send error: %d when sending to port %d", result,
-                    port);
+    Serial.printlnf("CAN send error: %d when sending to port %d", result, port);
   }
 
   return result;
@@ -832,8 +891,8 @@ bool PortFlagHandler::sendGetPortData(int addr)
   {
     char error_buff[20];
     ReturnErrorString(result, error_buff, 20);
-    Serial.printlnf("Failed to send data request to port %d, error: %s",
-                    addr, error_buff);
+    Serial.printlnf("Failed to send data request to port %d, error: %s", addr,
+                    error_buff);
     return false;
   }
 

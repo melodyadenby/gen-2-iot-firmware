@@ -463,13 +463,9 @@ void handlePortDataRequests()
       }
 
       last_poll_send_time = current_time;
-      current_poll_port++; // Move to next port for next iteration
       break;               // Only send one request per cycle
     }
-    else
-    {
-      current_poll_port++;
-    }
+    current_poll_port++;
   }
 }
 
@@ -523,6 +519,9 @@ void canThread()
       {
         portFlagHandler->processAllPortFlags();
       }
+
+      // Process queued messages for all ports
+      processPortMessageQueues();
 
       // Small delay to prevent busy-waiting
       delay(10);
@@ -1085,6 +1084,17 @@ void checkSystemHealth()
     {
       Serial.printlnf("Ports with pending flags: %d",
                       portFlagHandler->getPendingPortsCount());
+
+      // Show message queue status for all ports
+      int totalQueuedMessages = 0;
+      for (int port = 1; port <= MAX_PORTS; port++) {
+        int queueCount = getQueuedMessageCount(port);
+        if (queueCount > 0) {
+          Serial.printlnf("Port %d has %d queued messages", port, queueCount);
+          totalQueuedMessages += queueCount;
+        }
+      }
+      Serial.printlnf("Total queued messages: %d", totalQueuedMessages);
     }
 
     lastHealthCheck = uptime;

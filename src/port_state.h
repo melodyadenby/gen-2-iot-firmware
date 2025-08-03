@@ -5,14 +5,34 @@
 #include "Particle.h"
 #include "config.h"
 
-const unsigned long PORT_CHECK_INTERVAL = 60 * SEC_TO_MS_MULTIPLIER;
-const unsigned long POLL_STAGGER_DELAY = 1000; // 500ms between requests
+// Message queue constants
+#define MAX_QUEUED_MESSAGES_PER_PORT 5
+
+// Structure for queued messages
+struct QueuedMessage
+{
+  char command;
+  char variant[8]; // Enough space for variants like "0", "1", etc.
+  int timeout;
+  bool hasVariant;
+  unsigned long queueTime; // When this message was queued
+};
+
+const unsigned long PORT_CHECK_INTERVAL = 20 * SEC_TO_MS_MULTIPLIER;
+const unsigned long POLL_STAGGER_DELAY = 300; // 500ms between requests
+const unsigned long SUBSEQUENT_MSG_DELAY =
+    2000; // 1000ms delay between messages to same port
 
 const int VIN_LENGTH = 16;
 const int MAX_UNLOCK_RETRY = 3;
 // Port State Structure
 struct PortState
 {
+  // Message queue for this port
+  QueuedMessage messageQueue[MAX_QUEUED_MESSAGES_PER_PORT];
+  int queueHead;  // Index of next message to send
+  int queueTail;  // Index where to add next message
+  int queueCount; // Number of messages in queue
   bool DID_PORT_CHECK = false;
   bool docked;            // Is port docked
   bool charging;          // Is port charging
@@ -25,7 +45,9 @@ struct PortState
   char VIN[17];                  // Current VIN
   bool vin_request_flag = false; // Flag to call VIN
   unsigned long send_vin_request_timer;
-  unsigned long last_poll_time = 0;  // Last time this port was polled
+  unsigned long last_poll_time = 0; // Last time this port was polled
+  unsigned long last_message_time =
+      0;                             // Last time a message was sent to this port
   bool send_button_state_flag;       // Flag to send button state
   bool emergency_exit_flag = false;  // Flag to eject vehicle
   bool send_port_build_version_flag; // Flag to send port version no.
@@ -92,5 +114,19 @@ void setPortFirmwareVersion(int portNumber, const char *version);
 void markPortPolled(int portNumber);
 void clearPortFlags(int portNumber);
 void markPortsUnpolled();
+
+// Message delay management functions
+bool canSendMessageToPort(int portNumber);
+void markMessageSentToPort(int portNumber);
+unsigned long getTimeSinceLastMessage(int portNumber);
+
+// Message queue management functions
+bool queueMessageForPort(int portNumber, char command, const char *variant,
+                         int timeout);
+bool hasQueuedMessages(int portNumber);
+bool sendNextQueuedMessage(int portNumber);
+void processPortMessageQueues();
+int getQueuedMessageCount(int portNumber);
+void clearPortMessageQueue(int portNumber);
 
 #endif // PORT_STATE_H
