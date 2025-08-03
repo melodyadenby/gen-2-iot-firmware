@@ -171,7 +171,7 @@ void initializeArchitecture()
 void initializeSystem()
 {
   Serial.begin(115200);
-  while (!Serial.isConnected())
+  while (!Serial)
     ;
   // delay(2000);
 
@@ -1333,7 +1333,7 @@ void checkInterruptHealth()
     if (errorFlags & 0x40)
     { // RX0OVR flag
       Serial.printlnf("RX buffer overflow detected - clearing buffers instead of interrupt recovery");
-      mcp2515.clearRXnOVRFlags();      // Clear overflow flags
+      clearAllCANBuffers();
       lastInterruptTime = currentTime; // Reset timer
       return;
     }
@@ -1451,7 +1451,7 @@ void checkTransmissionReceptionBalance()
     if (errorFlags & 0x40)
     { // RX0OVR flag
       Serial.printlnf("RX buffer overflow during high traffic - not an interrupt failure");
-      mcp2515.clearRXnOVRFlags();      // Clear overflow flags
+      clearAllCANBuffers();
       lastInterruptTime = currentTime; // Reset timer
       return;
     }

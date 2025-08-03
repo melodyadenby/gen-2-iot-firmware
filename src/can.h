@@ -20,6 +20,7 @@ void ReturnErrorString(uint8_t err, char *ret, size_t ret_size);
 
 uint8_t getCANErrorFlags(bool debugLog);
 void printCANErrorState();
+void clearAllCANBuffers();
 // int initCAN();
 void incrementMessageCounter();
 

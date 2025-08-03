@@ -6,7 +6,7 @@
 #include "config.h"
 
 const unsigned long PORT_CHECK_INTERVAL = 60 * SEC_TO_MS_MULTIPLIER;
-const unsigned long POLL_STAGGER_DELAY = 1000; // 1s between requests
+const unsigned long POLL_STAGGER_DELAY = 1000; // 500ms between requests
 
 const int VIN_LENGTH = 16;
 const int MAX_UNLOCK_RETRY = 3;

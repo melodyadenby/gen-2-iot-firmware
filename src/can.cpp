@@ -55,6 +55,33 @@ void incrementMessageCounter()
   }
   last_message_time = current_time;
 }
+// Clear all CAN buffers to prevent overflow
+void clearAllCANBuffers()
+{
+  // Clear any pending messages in RX buffers
+  can_frame dummy;
+  int cleared = 0;
+
+  // Clear RX buffers by reading available messages
+  while (cleared < 10)
+  {
+    if (mcp2515.readMessage(&dummy) == MCP2515::ERROR_OK)
+    {
+      cleared++;
+    }
+    else
+    {
+      break;
+    }
+  }
+
+  mcp2515.clearRXnOVR();
+
+  if (cleared > 0)
+  {
+    Serial.printlnf("Cleared %d stale messages from CAN buffers", cleared);
+  }
+}
 uint8_t getCANErrorFlags(bool debugLog)
 {
   uint8_t errorFlags = mcp2515.getErrorFlags();
