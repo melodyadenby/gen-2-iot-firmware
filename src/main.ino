@@ -46,9 +46,11 @@ const unsigned long CAN_ERROR_RESET_INTERVAL = 60000; // 1 minute
 // Hardware watchdog handles all freeze detection at 20-second timeout
 
 // Interrupt Health Monitoring
+// Timing Logic: After PORT_CHECK_INTERVAL (10s), we send getPortData() to all ports
+// We expect responses within ~25s max, so timeouts are based on this pattern
 unsigned long lastTransmissionTime = 0;
 bool interruptHealthy = true;
-const unsigned long TX_RX_IMBALANCE_TIMEOUT = 60000; // 1 minute of TX without RX = problem
+const unsigned long TX_RX_IMBALANCE_TIMEOUT = PORT_CHECK_INTERVAL * 4; // 40s - expect responses after port polling cycle
 
 // CAN Error Monitoring Constants
 const int CAN_ERROR_THRESHOLD = 5;            // Max consecutive errors before recovery
@@ -80,8 +82,9 @@ can_frame messageQueue[50];
 unsigned long lastInterruptTime = 0;
 unsigned long lastInterruptCheck = 0;
 bool interruptStuckDetected = false;
-const unsigned long INTERRUPT_TIMEOUT = PORT_CHECK_INTERVAL * 2 + 5000; // PORT_CHECK_INTERVAL plus some time to allow delay seconds without interrupt
-const unsigned long INTERRUPT_CHECK_INTERVAL = 10000;                   // Check every 10 seconds
+// Base timeout: 3x polling interval (30s) - ports should respond within 25s max after getPortData()
+const unsigned long INTERRUPT_TIMEOUT = PORT_CHECK_INTERVAL * 3;
+const unsigned long INTERRUPT_CHECK_INTERVAL = 10000; // Check every 10 seconds
 
 // Global hardware watchdog object
 ApplicationWatchdog *hardwareWatchdog;
@@ -463,7 +466,10 @@ void handlePortDataRequests()
       current_poll_port++; // Move to next port for next iteration
       break;               // Only send one request per cycle
     }
-    current_poll_port++;
+    else
+    {
+      current_poll_port++;
+    }
   }
 }
 
@@ -650,6 +656,9 @@ void processCANMessage(const can_frame &rawMessage)
     portEventHandler->handleCANMessage(parsedMsg);
     // Reset consecutive error count on successful message processing
     resetCANSuccessCounter();
+    // Update interrupt health tracking - we successfully processed a message
+    lastInterruptTime = millis();
+    interruptHealthy = true;
   }
   else if (!parsedMsg.isValid)
   {
@@ -661,10 +670,6 @@ void processCANMessage(const can_frame &rawMessage)
 
 void can_interrupt()
 {
-  // Track interrupt reception for health monitoring
-  lastInterruptTime = millis();
-  interruptHealthy = true;
-
   // Minimal interrupt handler - just queue the message
   struct can_frame recMsg;
 
@@ -1099,12 +1104,12 @@ void emergencyReset(const char *reason)
 void canHealthMonitorThread()
 {
   static unsigned long lastHealthCheck = 0;
-  uint8_t currentFlags = 0;
   const unsigned long HEALTH_CHECK_INTERVAL =
       1000;                                      // Check every second during crisis
   const unsigned long MAIN_LOOP_TIMEOUT = 20000; // 20 seconds max
 
-  Serial.printlnf("CAN Health Monitor thread started");
+  Serial.println("CAN Health Monitor thread started");
+
   while (true)
   {
     unsigned long currentTime = millis();
@@ -1113,7 +1118,10 @@ void canHealthMonitorThread()
     if (currentTime - lastHealthCheck >= HEALTH_CHECK_INTERVAL)
     {
 
-      currentFlags = getCANErrorFlags(true);
+      // Check MCP2515 error flags for actual hardware issues
+      uint8_t currentFlags = getCANErrorFlags(true);
+
+      // Monitor CAN error rate (from old canMonitorThread)
       // Monitor CAN error rate
       if (currentTime - last_can_error_time > CAN_ERROR_RESET_INTERVAL)
       {
@@ -1177,11 +1185,37 @@ void canHealthMonitorThread()
         emergencyReset("CAN recovery timeout");
       }
 
-      // Reset if no successful operations for too long
+      // Check if no successful operations for too long
       if (canErrorMonitor.lastSuccessTime > 0 &&
           currentTime - canErrorMonitor.lastSuccessTime > PORT_CHECK_INTERVAL * 2 + 5000)
-      { // 1 minute
-        emergencyReset("No successful CAN operations for over the PORT_CHECK_INTERVAL allowed time seconds");
+      {
+        // Instead of emergency reset, check if CAN hardware is actually healthy
+        if (currentFlags == 0 && canErrorMonitor.consecutiveErrors == 0)
+        {
+          // CAN hardware looks fine, maybe just need to restart polling
+          Serial.println("No recent CAN success but hardware looks healthy - restarting polling");
+          markPortsUnpolled();                        // Gentle restart of port polling
+          canErrorMonitor.lastSuccessTime = millis(); // Reset timer
+
+          // Give it one more cycle to verify success
+          static unsigned long lastGentleRestart = 0;
+          if (currentTime - lastGentleRestart > 60000)
+          { // Only try once per minute
+            lastGentleRestart = currentTime;
+          }
+          else
+          {
+            // Second gentle restart failed, more serious issue
+            Serial.println("Gentle restart failed, CAN may have deeper issues");
+            emergencyReset("CAN operations failed even after gentle restart");
+          }
+        }
+        else
+        {
+          // Actual CAN hardware errors detected
+          Serial.printlnf("CAN hardware errors detected (flags: 0x%02X)", currentFlags);
+          emergencyReset("No successful CAN operations with hardware errors");
+        }
       }
 
       // Hardware watchdog handles main loop freeze detection automatically
@@ -1198,7 +1232,7 @@ void canHealthMonitorThread()
       // Check for queue overflow conditions
       if (queueOverflow)
       {
-        Serial.printlnf("WARNING: CAN message queue overflow detected");
+        Serial.println("CAN message queue overflow detected");
         queueOverflow = false; // Reset flag
         logCANError(-3, "persistent_queue_overflow");
       }
@@ -1206,21 +1240,32 @@ void canHealthMonitorThread()
       // Check for invalid CAN messages (indicates controller corruption)
       if (canErrorMonitor.consecutiveErrors >= 3)
       {
-        Serial.printlnf("WARNING: CAN controller may be corrupted (%d "
-                        "consecutive errors), monitoring closely",
+        Serial.printlnf("CAN controller corruption suspected (%d consecutive errors)",
                         canErrorMonitor.consecutiveErrors);
       }
 
       // Log periodic health status during error conditions
-      if (canErrorMonitor.consecutiveErrors > 0 ||
-          canErrorMonitor.inRecoveryMode)
+      // Only log health status every 10 seconds to reduce noise
+      static unsigned long lastHealthLog = 0;
+      if ((canErrorMonitor.consecutiveErrors > 0 || canErrorMonitor.inRecoveryMode) &&
+          currentTime - lastHealthLog > 10000)
       {
-        Serial.printlnf("CAN Health Status - Consecutive Errors: %d, Recovery "
-                        "Attempts: %d, In Recovery: %s",
+        Serial.printlnf("CAN Health: Errors=%d, Attempts=%d, Recovering=%s, HW_Flags=0x%02X",
                         canErrorMonitor.consecutiveErrors,
                         canErrorMonitor.recoveryAttempts,
-                        canErrorMonitor.inRecoveryMode ? "YES" : "NO");
+                        canErrorMonitor.inRecoveryMode ? "YES" : "NO",
+                        currentFlags);
+        lastHealthLog = currentTime;
       }
+
+      // // Log CAN error flags if any are detected (less frequent)
+      // static unsigned long lastFlagLog = 0;
+      // if (currentFlags != 0 && currentTime - lastFlagLog > 30000) // Every 30 seconds
+      // {
+      //   Serial.printlnf("MCP2515 hardware error flags detected: 0x%02X", currentFlags);
+      //   getCANErrorFlags(true); // Debug output with detailed flag breakdown
+      //   lastFlagLog = currentTime;
+      // }
 
       lastHealthCheck = currentTime;
     }
@@ -1269,12 +1314,33 @@ void checkInterruptHealth()
   // Check if we've received interrupts recently
   unsigned long timeSinceLastInterrupt = currentTime - lastInterruptTime;
 
-  // If we haven't received interrupts in a while, but CAN is supposed to be working
-  if (timeSinceLastInterrupt > INTERRUPT_TIMEOUT && !CAN_ERROR && !can_recovery_needed)
+  // Calculate dynamic timeout based on polling cycle
+  // Normal: 30s timeout, but after port reset: 40s to allow for slower responses
+  unsigned long dynamicTimeout = INTERRUPT_TIMEOUT;
+  unsigned long timeSincePortReset = currentTime - last_port_check_reset;
+  if (timeSincePortReset < PORT_CHECK_INTERVAL * 2)
   {
+    dynamicTimeout = PORT_CHECK_INTERVAL * 4; // 40s grace period after port polling starts
+  }
+
+  // If we haven't received message processing in a while, but CAN is supposed to be working
+  if (timeSinceLastInterrupt > dynamicTimeout && !CAN_ERROR && !can_recovery_needed)
+  {
+    // Check MCP2515 error flags first to see if it's just buffer overflow
+    uint8_t errorFlags = getCANErrorFlags(false);
+
+    // If it's just RX buffer overflow, clear buffers instead of interrupt recovery
+    if (errorFlags & 0x40)
+    { // RX0OVR flag
+      Serial.printlnf("RX buffer overflow detected - clearing buffers instead of interrupt recovery");
+      mcp2515.clearRXnOVRFlags();      // Clear overflow flags
+      lastInterruptTime = currentTime; // Reset timer
+      return;
+    }
+
     // Check if we can still send (TX working) but not receive (RX/interrupt dead)
-    Serial.printlnf("WARNING: No CAN interrupts for %lu ms - possible interrupt failure",
-                    timeSinceLastInterrupt);
+    Serial.printlnf("No CAN message processing for %lu ms (timeout: %lu ms) - checking interrupt system",
+                    timeSinceLastInterrupt, dynamicTimeout);
 
     // Check MCP2515 interrupt flags to see if they're stuck
     uint8_t intFlags = mcp2515.getInterrupts();
@@ -1282,15 +1348,14 @@ void checkInterruptHealth()
 
     if (intFlags != 0)
     {
-      Serial.printlnf("CRITICAL: MCP2515 has pending interrupts but interrupt handler not called!");
-      Serial.printlnf("This indicates interrupt pin or attachInterrupt failure");
+      Serial.printlnf("CRITICAL: MCP2515 has pending interrupts but no message processing!");
 
       // Try to recover the interrupt system
       recoverInterruptSystem();
     }
     else
     {
-      Serial.printlnf("MCP2515 shows no pending interrupts - may be normal if bus is quiet");
+      Serial.printlnf("MCP2515 no pending interrupts - may be normal quiet period");
       // Update last interrupt time to prevent false alarms during quiet periods
       lastInterruptTime = currentTime - (INTERRUPT_TIMEOUT / 2);
     }
@@ -1328,7 +1393,7 @@ void recoverInterruptSystem()
   uint8_t intFlags = mcp2515.getInterrupts();
   if (intFlags != 0)
   {
-    Serial.printlnf("Post-recovery: MCP2515 interrupt flags: 0x%02X", intFlags);
+    Serial.printlnf("Post-recovery: MCP2515 flags: 0x%02X", intFlags);
   }
 }
 
@@ -1343,7 +1408,7 @@ void checkTransmissionReceptionBalance()
     static bool txRxWasReady = false;
     if (txRxWasReady)
     {
-      Serial.printlnf("TX/RX balance monitoring disabled - system not fully operational");
+      Serial.printlnf("TX/RX monitoring disabled - system not ready");
       txRxWasReady = false;
     }
     lastTransmissionTime = currentTime;
@@ -1355,7 +1420,7 @@ void checkTransmissionReceptionBalance()
   static bool txRxWasReady = false;
   if (!txRxWasReady)
   {
-    Serial.printlnf("TX/RX balance monitoring enabled - system fully operational");
+    Serial.printlnf("TX/RX monitoring enabled - system ready");
     txRxWasReady = true;
     lastTransmissionTime = currentTime; // Start fresh when monitoring begins
     lastInterruptTime = currentTime;
@@ -1365,19 +1430,46 @@ void checkTransmissionReceptionBalance()
   unsigned long timeSinceLastTX = currentTime - lastTransmissionTime;
   unsigned long timeSinceLastRX = currentTime - lastInterruptTime;
 
+  // Calculate dynamic TX/RX timeout based on polling patterns
+  // After port polling cycle starts, give extra time for all ports to respond
+  unsigned long dynamicTxRxTimeout = TX_RX_IMBALANCE_TIMEOUT;
+  unsigned long timeSincePortReset = currentTime - last_port_check_reset;
+  if (timeSincePortReset < PORT_CHECK_INTERVAL * 2)
+  {
+    dynamicTxRxTimeout = PORT_CHECK_INTERVAL * 5; // 50s grace period after polling cycle
+  }
+
   // If we've transmitted recently but haven't received anything in much longer
-  if (timeSinceLastTX < TX_RX_IMBALANCE_TIMEOUT &&
-      timeSinceLastRX > TX_RX_IMBALANCE_TIMEOUT &&
+  if (timeSinceLastTX < PORT_CHECK_INTERVAL &&
+      timeSinceLastRX > dynamicTxRxTimeout &&
       !CAN_ERROR && !can_recovery_needed)
   {
+    // Before attempting interrupt recovery, check if it's just buffer overflow
+    uint8_t errorFlags = getCANErrorFlags(false);
 
-    Serial.printlnf("CRITICAL: TX/RX imbalance detected!");
-    Serial.printlnf("Last transmission: %lu ms ago", timeSinceLastTX);
-    Serial.printlnf("Last reception: %lu ms ago", timeSinceLastRX);
-    Serial.printlnf("This suggests interrupt system failure while TX still works");
+    // If it's RX overflow, that's normal under high traffic - not an interrupt failure
+    if (errorFlags & 0x40)
+    { // RX0OVR flag
+      Serial.printlnf("RX buffer overflow during high traffic - not an interrupt failure");
+      mcp2515.clearRXnOVRFlags();      // Clear overflow flags
+      lastInterruptTime = currentTime; // Reset timer
+      return;
+    }
 
-    // This is exactly the scenario you described - sending works but receiving doesn't
-    Serial.printlnf("Attempting interrupt system recovery...");
-    recoverInterruptSystem();
+    // Only trigger interrupt recovery if we have real interrupt issues
+    static unsigned long lastInterruptRecovery = 0;
+    if (currentTime - lastInterruptRecovery > PORT_CHECK_INTERVAL * 6)
+    { // Only once per 6 polling cycles
+      Serial.printlnf("CRITICAL: TX/RX imbalance - TX:%lu ms ago, RX:%lu ms ago (timeout: %lu ms)",
+                      timeSinceLastTX, timeSinceLastRX, dynamicTxRxTimeout);
+      Serial.printlnf("TX works but RX failed - attempting interrupt recovery");
+      recoverInterruptSystem();
+      lastInterruptRecovery = currentTime;
+    }
+    else
+    {
+      // Reset timer to prevent constant triggering
+      lastInterruptTime = currentTime - (dynamicTxRxTimeout / 2);
+    }
   }
 }
