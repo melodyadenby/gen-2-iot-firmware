@@ -13,7 +13,7 @@ extern long last_credentials_call;
 // Credentials Structure
 struct IotCredentials {
   String pubId;
-  String mqttUser;
+  String particleId;
   String hub_uuid;
 };
 
