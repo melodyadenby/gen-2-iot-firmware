@@ -972,14 +972,21 @@ void checkSystemHealth() {
     Serial.printlnf("MQTT Status: %s", getMQTTStatus().c_str());
     Serial.printlnf("MQTT Healthy: %s", isMQTTHealthy() ? "yes" : "no");
     Serial.printlnf("MQTT Fail Count: %d", getMQTTFailCount());
+    if (lastMqttMessageReceived > 0) {
+      Serial.printlnf("Last MQTT message: %lu ms ago",
+                      uptime - lastMqttMessageReceived);
+    } else {
+      Serial.printlnf("Last MQTT message: never");
+    }
     Serial.printlnf("Credentials: %s", getCredentialsStatus().c_str());
     Serial.printlnf("CAN Errors (last minute): %d", can_error_count);
     Serial.printlnf("CAN Recovery needed: %s",
                     can_recovery_needed ? "yes" : "no");
 
-    // Force MQTT reconnection if unhealthy
-    if (BROKER_CONNECTED && !isMQTTHealthy()) {
-      Serial.println("MQTT unhealthy despite connection - forcing reconnect");
+    // Force MQTT reconnection only if connection is actually broken
+    if (BROKER_CONNECTED && !client.isConnected()) {
+      Serial.println(
+          "MQTT client disconnected despite flag - forcing reconnect");
       forceMQTTReconnect();
     }
 
@@ -1425,15 +1432,21 @@ void handleSerialCommands() {
     if (command == "MQTT_STATUS") {
       Serial.printlnf("=== MQTT Status ===");
       Serial.printlnf("Connected: %s", isMQTTConnected() ? "yes" : "no");
+      Serial.printlnf("Client Connected: %s",
+                      client.isConnected() ? "yes" : "no");
       Serial.printlnf("Healthy: %s", isMQTTHealthy() ? "yes" : "no");
       Serial.printlnf("Status: %s", getMQTTStatus().c_str());
-      Serial.printlnf("Fail Count: %d", getMQTTFailCount());
-      Serial.printlnf("Last Send: %lu ms ago", millis() - getLastMQTTSend());
-      Serial.printlnf(
-          "Last Message Received: %lu ms ago",
-          lastMqttMessageReceived > 0 ? millis() - lastMqttMessageReceived : 0);
+      Serial.printlnf("Publish Fail Count: %d", getMQTTFailCount());
+      Serial.printlnf("Last Publish: %lu ms ago", millis() - getLastMQTTSend());
+      if (lastMqttMessageReceived > 0) {
+        Serial.printlnf("Last Message Received: %lu ms ago",
+                        millis() - lastMqttMessageReceived);
+      } else {
+        Serial.printlnf("Last Message Received: never");
+      }
       Serial.printlnf("Pub Topic: %s", MQTT_PUB_TOPIC);
       Serial.printlnf("Sub Topic: %s", MQTT_SUB_TOPIC);
+      Serial.printlnf("Note: No messages for hours is normal for IoT devices");
     } else if (command == "MQTT_RECONNECT") {
       Serial.println("Forcing MQTT reconnection...");
       forceMQTTReconnect();
