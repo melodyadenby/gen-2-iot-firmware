@@ -316,6 +316,9 @@ void handleSystemLoop() {
   // System health monitoring
   checkSystemHealth();
 
+  // Check for pending port status requests
+  checkPortStatusRequest();
+
   // Handle serial debug commands
   handleSerialCommands();
 

@@ -48,6 +48,8 @@ const int MQTT_HEARTBEAT_MAX_FAILURES = 5;
 // Port status request variables
 char portStatusRequest[64];
 bool portStatusRequestPending = false;
+unsigned long portStatusRequestTime = 0;
+bool portStatusWaitingForPoll = false;
 
 // MQTT Topics
 char *topic_base = "/hub/";
@@ -95,11 +97,15 @@ void checkMQTTStat() {
   if (!mqtt_disconnect_noted) {
     mqtt_disconnected_timer = millis();
     mqtt_disconnect_noted = true;
+    Serial.println("MQTT disconnected - starting retry timer");
   }
 
-  // Attempt reconnection after timeout
+  // Attempt reconnection after timeout, but respect retry intervals
   if (current_time - mqtt_disconnected_timer >= MQTT_DISCONNECTED_TIMEOUT) {
-    attemptReconnect();
+    // Only call attemptReconnect if enough time has passed since last attempt
+    if (current_time - lastRetryTime >= currentRetryInterval) {
+      attemptReconnect();
+    }
   }
 }
 
@@ -133,20 +139,19 @@ void checkMQTTHealth() {
 void attemptReconnect() {
   unsigned long currentMillis = millis();
 
-  Serial.printlnf("Time since last attempt: %lu ms\n",
+  // This function should only be called when ready to attempt reconnection
+  Serial.printlnf("Time since last attempt: %lu ms",
                   currentMillis - lastRetryTime);
-  Serial.printlnf("Current retry interval: %lu ms\n", currentRetryInterval);
+  Serial.printlnf("Current retry interval: %lu ms", currentRetryInterval);
+  Serial.println("Attempting to reconnect MQTT...");
 
-  if (currentMillis - lastRetryTime >= currentRetryInterval) {
-    Serial.println("Attempting to reconnect MQTT...");
-    if (connect_mqtt()) {
-      Serial.println("Reconnected to MQTT broker.");
-      resetRetryLogic();
-    } else {
-      Serial.println("Reconnect attempt failed.");
-      lastRetryTime = currentMillis; // Update last retry time on attempt
-      increaseRetryInterval();
-    }
+  if (connect_mqtt()) {
+    Serial.println("Reconnected to MQTT broker.");
+    resetRetryLogic();
+  } else {
+    Serial.println("Reconnect attempt failed.");
+    lastRetryTime = currentMillis; // Update last retry time on attempt
+    increaseRetryInterval();
   }
 }
 
@@ -266,8 +271,7 @@ void publishCloud(String message) {
     MQTT_FAIL_COUNT++;
     lastHeartbeatRetryTime = millis(); // Store last failed attempt time
     Serial.printlnf("MQTT publish failed, fail count: %d\n", MQTT_FAIL_COUNT);
-
-          }
+  }
 }
 
 void mqtt_callback(char *topic, byte *payload, unsigned int length) {
@@ -361,8 +365,13 @@ void processMQTTCommand(char cmd, char variant, int port, char btn,
         snprintf(portStatusRequest, sizeof(portStatusRequest), "P,0,%s,%s",
                  tokens[2], tokens[3]);
         portStatusRequestPending = true;
+        portStatusRequestTime = millis();
+        portStatusWaitingForPoll = true;
         Serial.printlnf("Port status request stored: %s", portStatusRequest);
-        Serial.printlnf("Will send status after next port data update");
+        Serial.printlnf("Will wait for fresh port data before responding");
+        Serial.printlnf(
+            "DEBUG: Wait time will be %lu ms (PORT_CHECK_INTERVAL=%lu ms)",
+            PORT_CHECK_INTERVAL + 5000, PORT_CHECK_INTERVAL);
       } else {
         Serial.println("Invalid P command format - missing port range");
       }
@@ -467,8 +476,13 @@ void processMQTTCommand(char cmd, char variant, int port, char btn,
       snprintf(portStatusRequest, sizeof(portStatusRequest), "P,0,%s,%s",
                tokens[2], tokens[3]);
       portStatusRequestPending = true;
+      portStatusRequestTime = millis();
+      portStatusWaitingForPoll = true;
       Serial.printlnf("Port status request stored: %s", portStatusRequest);
-      Serial.printlnf("Will send status after next port data update");
+      Serial.printlnf("Will wait for fresh port data before responding");
+      Serial.printlnf(
+          "DEBUG: Wait time will be %lu ms (PORT_CHECK_INTERVAL=%lu ms)",
+          PORT_CHECK_INTERVAL + 5000, PORT_CHECK_INTERVAL);
     } else {
       Serial.println("Invalid P command format - missing port range");
     }
@@ -514,6 +528,28 @@ bool shouldRetryMQTT() {
 }
 
 void sendPortStatus() {
+  Serial.println(
+      "DEBUG: sendPortStatus() called - checking if this should happen");
+  Serial.printlnf(
+      "DEBUG: portStatusRequestPending=%s, portStatusWaitingForPoll=%s",
+      portStatusRequestPending ? "true" : "false",
+      portStatusWaitingForPoll ? "true" : "false");
+  Serial.printlnf("DEBUG: Request time=%lu, Current time=%lu, Elapsed=%lu ms",
+                  portStatusRequestTime, millis(),
+                  millis() - portStatusRequestTime);
+
+  // Check if this is being called too early
+  if (portStatusWaitingForPoll && portStatusRequestTime > 0) {
+    unsigned long elapsed = millis() - portStatusRequestTime;
+    unsigned long requiredWait = PORT_CHECK_INTERVAL + 5000;
+    if (elapsed < requiredWait) {
+      Serial.printlnf("ERROR: sendPortStatus() called too early! Only %lu ms "
+                      "elapsed, need %lu ms",
+                      elapsed, requiredWait);
+      return; // Don't send status yet
+    }
+  }
+
   Serial.println("sending port staus");
   char requestCopy[sizeof(portStatusRequest)];
   strncpy(requestCopy, portStatusRequest, sizeof(requestCopy));
@@ -555,6 +591,8 @@ bool isPortStatusRequestPending() { return portStatusRequestPending; }
 
 void clearPortStatusRequest() {
   portStatusRequestPending = false;
+  portStatusWaitingForPoll = false;
+  portStatusRequestTime = 0;
   memset(portStatusRequest, 0, sizeof(portStatusRequest));
 }
 
@@ -591,4 +629,36 @@ void forceMQTTReconnect() {
   BROKER_CONNECTED = false;
   mqtt_disconnect_noted = false;
   resetRetryLogic();
+}
+
+void checkPortStatusRequest() {
+  if (!portStatusRequestPending || !portStatusWaitingForPoll) {
+    return;
+  }
+
+  unsigned long currentTime = millis();
+  // Wait for one full PORT_CHECK_INTERVAL plus buffer to ensure all ports
+  // polled
+  const unsigned long WAIT_TIME = (MAX_PORTS * POLL_STAGGER_DELAY) +
+                                  5000; // PORT_CHECK_INTERVAL + 5s buffer
+
+  if (currentTime - portStatusRequestTime >= WAIT_TIME) {
+    Serial.printlnf("Port status wait period complete (%lu ms, waited %lu ms) "
+                    "- sending response",
+                    WAIT_TIME, currentTime - portStatusRequestTime);
+    portStatusWaitingForPoll = false;
+    sendPortStatus();
+    clearPortStatusRequest();
+  } else {
+    // Only log waiting message every 5 seconds to avoid spam
+    static unsigned long lastWaitLog = 0;
+    if (currentTime - lastWaitLog >= 5000) {
+      unsigned long remainingWait =
+          WAIT_TIME - (currentTime - portStatusRequestTime);
+      Serial.printlnf("Waiting %lu more ms for fresh port data "
+                      "(WAIT_TIME=%lu ms)...",
+                      remainingWait, WAIT_TIME);
+      lastWaitLog = currentTime;
+    }
+  }
 }

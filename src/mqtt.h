@@ -78,5 +78,6 @@ void checkMQTTHealth();
 void sendHeartbeatIfNeeded(unsigned long currentTime);
 bool isMQTTHealthy();
 void forceMQTTReconnect();
+void checkPortStatusRequest();
 
 #endif // MQTT_H
