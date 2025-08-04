@@ -100,6 +100,7 @@ void checkInterruptHealth();
 void recoverInterruptSystem();
 void checkTransmissionReceptionBalance();
 void handleRxOverflowWithEscalation(unsigned long currentTime);
+void handleSerialCommands();
 
 // Hardware watchdog handler
 void hardwareWatchdogHandler() { System.reset(RESET_NO_WAIT); }
@@ -314,6 +315,9 @@ void handleSystemLoop() {
 
   // System health monitoring
   checkSystemHealth();
+
+  // Handle serial debug commands
+  handleSerialCommands();
 
   // Small delay to prevent CPU overload
   delay(5);
@@ -963,10 +967,18 @@ void checkSystemHealth() {
     Serial.printlnf("System Health - Uptime: %lu ms, Free Memory: %lu bytes",
                     uptime, freeMemory);
     Serial.printlnf("MQTT Status: %s", getMQTTStatus().c_str());
+    Serial.printlnf("MQTT Healthy: %s", isMQTTHealthy() ? "yes" : "no");
+    Serial.printlnf("MQTT Fail Count: %d", getMQTTFailCount());
     Serial.printlnf("Credentials: %s", getCredentialsStatus().c_str());
     Serial.printlnf("CAN Errors (last minute): %d", can_error_count);
     Serial.printlnf("CAN Recovery needed: %s",
                     can_recovery_needed ? "yes" : "no");
+
+    // Force MQTT reconnection if unhealthy
+    if (BROKER_CONNECTED && !isMQTTHealthy()) {
+      Serial.println("MQTT unhealthy despite connection - forcing reconnect");
+      forceMQTTReconnect();
+    }
 
     if (portFlagHandler) {
       Serial.printlnf("Ports with pending flags: %d",
@@ -1399,5 +1411,53 @@ void handleRxOverflowWithEscalation(unsigned long currentTime) {
         canErrorMonitor.rxOverflowCount);
     canErrorMonitor.rxOverflowCount = 0;
     canErrorMonitor.firstRxOverflowTime = 0;
+  }
+}
+
+void handleSerialCommands() {
+  if (Serial.available()) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+
+    if (command == "MQTT_STATUS") {
+      Serial.printlnf("=== MQTT Status ===");
+      Serial.printlnf("Connected: %s", isMQTTConnected() ? "yes" : "no");
+      Serial.printlnf("Healthy: %s", isMQTTHealthy() ? "yes" : "no");
+      Serial.printlnf("Status: %s", getMQTTStatus().c_str());
+      Serial.printlnf("Fail Count: %d", getMQTTFailCount());
+      Serial.printlnf("Last Send: %lu ms ago", millis() - getLastMQTTSend());
+      Serial.printlnf(
+          "Last Message Received: %lu ms ago",
+          lastMqttMessageReceived > 0 ? millis() - lastMqttMessageReceived : 0);
+      Serial.printlnf("Pub Topic: %s", MQTT_PUB_TOPIC);
+      Serial.printlnf("Sub Topic: %s", MQTT_SUB_TOPIC);
+    } else if (command == "MQTT_RECONNECT") {
+      Serial.println("Forcing MQTT reconnection...");
+      forceMQTTReconnect();
+    } else if (command == "MQTT_HEARTBEAT") {
+      Serial.println("Sending MQTT heartbeat...");
+      publishCloud("H,0,1");
+    } else if (command == "SYSTEM_STATUS") {
+      Serial.printlnf("=== System Status ===");
+      Serial.printlnf("Free Memory: %lu bytes", System.freeMemory());
+      Serial.printlnf("Uptime: %lu ms", millis());
+      Serial.printlnf("Particle Connected: %s",
+                      Particle.connected() ? "yes" : "no");
+      Serial.printlnf("Credentials Valid: %s",
+                      areCredentialsValid() ? "yes" : "no");
+      Serial.printlnf("CAN Error Count: %d", can_error_count);
+      Serial.printlnf("CAN Recovery Needed: %s",
+                      can_recovery_needed ? "yes" : "no");
+    } else if (command == "HELP") {
+      Serial.println("=== Available Commands ===");
+      Serial.println("MQTT_STATUS - Show MQTT connection details");
+      Serial.println("MQTT_RECONNECT - Force MQTT reconnection");
+      Serial.println("MQTT_HEARTBEAT - Send test heartbeat");
+      Serial.println("SYSTEM_STATUS - Show system health");
+      Serial.println("HELP - Show this help");
+    } else if (command.length() > 0) {
+      Serial.printlnf("Unknown command: %s (type HELP for available commands)",
+                      command.c_str());
+    }
   }
 }

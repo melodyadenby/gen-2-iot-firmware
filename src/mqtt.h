@@ -34,6 +34,10 @@ extern unsigned long last_mqtt_send;
 extern int MQTT_FAIL_COUNT;
 extern unsigned long lastHeartbeatRetryTime;
 
+// MQTT Health Monitoring
+extern unsigned long lastMqttMessageReceived;
+extern bool mqttHealthy;
+
 // MQTT Topics
 extern char *topic_base;
 extern char *SUB_BASE;
@@ -68,5 +72,11 @@ bool shouldRetryMQTT();
 void sendPortStatus();
 bool isPortStatusRequestPending();
 void clearPortStatusRequest();
+
+// MQTT Health and Heartbeat Functions
+void checkMQTTHealth();
+void sendHeartbeatIfNeeded(unsigned long currentTime);
+bool isMQTTHealthy();
+void forceMQTTReconnect();
 
 #endif // MQTT_H

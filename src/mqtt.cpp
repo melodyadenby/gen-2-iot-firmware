@@ -31,6 +31,20 @@ unsigned long last_mqtt_send = 0;
 int MQTT_FAIL_COUNT = 0;
 unsigned long lastHeartbeatRetryTime = 0;
 
+// MQTT Health Monitoring Variables
+unsigned long lastMqttMessageReceived = 0;
+unsigned long lastMqttHealthCheck = 0;
+const unsigned long MQTT_MESSAGE_TIMEOUT =
+    300000; // 5 minutes without messages = unhealthy
+const unsigned long MQTT_HEALTH_CHECK_INTERVAL =
+    60000; // Check every 60 seconds
+bool mqttHealthy = true;
+
+// MQTT Heartbeat Variables
+const unsigned long MQTT_HEARTBEAT_INTERVAL = 60 * 60 * 1000; // 1 hour
+const unsigned long MQTT_HEARTBEAT_RETRY_INTERVAL = 5 * 1000; // 5 seconds
+const int MQTT_HEARTBEAT_MAX_FAILURES = 5;
+
 // Port status request variables
 char portStatusRequest[64];
 bool portStatusRequestPending = false;
@@ -62,6 +76,7 @@ void handleMQTTClientLoop() {
   client.loop();
   BROKER_CONNECTED = client.isConnected();
   checkMQTTStat();
+  checkMQTTHealth();
 }
 
 void checkMQTTStat() {
@@ -86,6 +101,33 @@ void checkMQTTStat() {
   if (current_time - mqtt_disconnected_timer >= MQTT_DISCONNECTED_TIMEOUT) {
     attemptReconnect();
   }
+}
+
+void checkMQTTHealth() {
+  unsigned long currentTime = millis();
+
+  // Only check health periodically
+  if (currentTime - lastMqttHealthCheck < MQTT_HEALTH_CHECK_INTERVAL) {
+    return;
+  }
+  lastMqttHealthCheck = currentTime;
+
+  // Check if we haven't received messages in too long
+  if (BROKER_CONNECTED && lastMqttMessageReceived > 0) {
+    unsigned long timeSinceLastMessage = currentTime - lastMqttMessageReceived;
+    if (timeSinceLastMessage > MQTT_MESSAGE_TIMEOUT) {
+      Serial.printlnf("MQTT unhealthy - no messages for %lu ms",
+                      timeSinceLastMessage);
+      mqttHealthy = false;
+      // Force reconnection
+      client.disconnect();
+      BROKER_CONNECTED = false;
+      mqtt_disconnect_noted = false;
+    }
+  }
+
+  // Send heartbeat if needed
+  sendHeartbeatIfNeeded(currentTime);
 }
 
 void attemptReconnect() {
@@ -201,6 +243,16 @@ void publishCloud(String message) {
 
   if (!BROKER_CONNECTED) {
     Serial.println("MQTT not connected, cannot publish");
+    MQTT_FAIL_COUNT++;
+    return;
+  }
+
+  // Check if client is actually connected (not just BROKER_CONNECTED flag)
+  if (!client.isConnected()) {
+    Serial.println("MQTT client not actually connected despite flag");
+    BROKER_CONNECTED = false;
+    mqtt_disconnect_noted = false;
+    MQTT_FAIL_COUNT++;
     return;
   }
 
@@ -214,7 +266,8 @@ void publishCloud(String message) {
     MQTT_FAIL_COUNT++;
     lastHeartbeatRetryTime = millis(); // Store last failed attempt time
     Serial.printlnf("MQTT publish failed, fail count: %d\n", MQTT_FAIL_COUNT);
-  }
+
+          }
 }
 
 void mqtt_callback(char *topic, byte *payload, unsigned int length) {
@@ -223,6 +276,10 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length) {
   p[length] = '\0';
 
   Serial.printlnf("MQTT message received on topic '%s': %s", topic, p);
+
+  // Update last message received time for health monitoring
+  lastMqttMessageReceived = millis();
+  mqttHealthy = true;
 
   // Parse the message by comma delimiter
   char *token;
@@ -499,4 +556,39 @@ bool isPortStatusRequestPending() { return portStatusRequestPending; }
 void clearPortStatusRequest() {
   portStatusRequestPending = false;
   memset(portStatusRequest, 0, sizeof(portStatusRequest));
+}
+
+void sendHeartbeatIfNeeded(unsigned long currentTime) {
+  // Send heartbeat every hour, with retry logic for failures
+  if (currentTime - last_mqtt_send >= MQTT_HEARTBEAT_INTERVAL) {
+    Serial.println("Sending MQTT heartbeat check");
+
+    if (MQTT_FAIL_COUNT < MQTT_HEARTBEAT_MAX_FAILURES) {
+      if (currentTime - lastHeartbeatRetryTime >=
+          MQTT_HEARTBEAT_RETRY_INTERVAL) {
+        Serial.printlnf("Heartbeat attempt #%d", MQTT_FAIL_COUNT + 1);
+        publishCloud("H,0,1");
+        lastHeartbeatRetryTime = currentTime;
+      }
+    } else {
+      Serial.printlnf("MQTT failed %d times. Forcing reconnection...",
+                      MQTT_HEARTBEAT_MAX_FAILURES);
+      // Force disconnect and reconnect
+      client.disconnect();
+      BROKER_CONNECTED = false;
+      mqtt_disconnect_noted = false;
+      MQTT_FAIL_COUNT = 0;          // Reset for next connection attempt
+      last_mqtt_send = currentTime; // Reset heartbeat timer
+    }
+  }
+}
+
+bool isMQTTHealthy() { return mqttHealthy && BROKER_CONNECTED; }
+
+void forceMQTTReconnect() {
+  Serial.println("Forcing MQTT reconnection...");
+  client.disconnect();
+  BROKER_CONNECTED = false;
+  mqtt_disconnect_noted = false;
+  resetRetryLogic();
 }
