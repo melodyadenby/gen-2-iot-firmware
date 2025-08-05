@@ -78,8 +78,9 @@ void initializeMQTT() {
   Serial.println("MQTT initialized");
 }
 
-void handleMQTTClientLoop() {
-  client.loop();
+void handleMQTTClientLoop() { client.loop(); }
+
+void handleMQTTChecks() {
   BROKER_CONNECTED = client.isConnected();
   checkMQTTStat();
   checkMQTTHealth();

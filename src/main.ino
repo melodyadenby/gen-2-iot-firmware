@@ -168,6 +168,7 @@ void setup() {
 void loop() {
   ApplicationWatchdog::checkin(); // Feed hardware watchdog
   DeviceInfoLedger::instance().loop();
+  handleMQTTClientLoop();
 
   static unsigned long lastLoopTime = 0;
   unsigned long currentTime = millis();
@@ -374,7 +375,7 @@ void handleSystemLoop() {
   handlePortDataRequests();
 
   // Handle MQTT and credentials
-  handleMQTTClientLoop();
+  handleMQTTChecks();
   handleCredentials();
   updateSystemStatus();
 
