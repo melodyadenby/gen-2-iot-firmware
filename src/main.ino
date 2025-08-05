@@ -81,10 +81,33 @@ struct CANErrorMonitor {
   unsigned long lastRxOverflowClear;
 } canErrorMonitor = {0, 0, 0, 0, false, 0, 0, 0, false, 0, 0, 0, 0};
 
+// Cloud statistics variables
+unsigned long lastPingTimes[MAX_PORTS + 1] = {
+    0}; // Last ping time for each port
+unsigned long canMessagesReceived = 0;
+unsigned long canMessagesSent = 0;
+unsigned long canRecoveryCount = 0;
+unsigned long systemUptime = 0;
+unsigned long lastHeartbeat = 0;
+int activePorts = 0;
+int dockedPorts = 0;
+unsigned long mqttMessagesReceived = 0;
+unsigned long mqttMessagesSent = 0;
+char systemStatus[64] = "Starting";
+char lastError[128] = "None";
+
+// Interrupt flood detection variables
+volatile unsigned long lastInterruptTime = 0;
+volatile int interruptFloodCount = 0;
+volatile bool interruptFloodDetected = false;
+unsigned long lastFloodRecovery = 0;
+const int MAX_INTERRUPTS_PER_MS = 5;
+const unsigned long FLOOD_RECOVERY_INTERVAL = 5000; // 5 seconds
+
 can_frame messageQueue[50];
 
 // Interrupt monitoring variables
-unsigned long lastInterruptTime = 0;
+
 unsigned long lastInterruptCheck = 0;
 bool interruptStuckDetected = false;
 // Base timeout: 3x polling interval (30s) - ports should respond within 25s max
@@ -101,6 +124,11 @@ void recoverInterruptSystem();
 void checkTransmissionReceptionBalance();
 void handleRxOverflowWithEscalation(unsigned long currentTime);
 void handleSerialCommands();
+void updateActivePortsCount();
+void updateDockedPortsCount();
+void updateLastPingTime(int port);
+void logSystemError(const char *error);
+void updateSystemStatus(const char *status);
 
 // Hardware watchdog handler
 void hardwareWatchdogHandler() { System.reset(RESET_NO_WAIT); }
@@ -124,6 +152,9 @@ void setup() {
     canErrorMonitor.lastSuccessTime = millis();
     canErrorMonitor.recoveryAttempts = 0;
 
+    // Initialize system status
+    updateSystemStatus("System Ready");
+
     Serial.printlnf("=== SYSTEM STARTUP COMPLETE ===");
     Serial.printlnf("CAN Error Monitoring: ENABLED");
     Serial.printlnf("Hardware Watchdog: ENABLED (20s timeout)");
@@ -140,6 +171,9 @@ void loop() {
 
   static unsigned long lastLoopTime = 0;
   unsigned long currentTime = millis();
+
+  // Update system uptime for cloud
+  systemUptime = currentTime;
 
   // Detect if main loop is running too slowly (potential freeze indicator)
   if (lastLoopTime > 0 && (currentTime - lastLoopTime) > 5000) {
@@ -177,11 +211,42 @@ void initializeSystem() {
   initializeMQTT();
   initializeLedger();
 
+  // Basic system variables
   Particle.variable("CAN_ERROR", CAN_ERROR);
   Particle.variable("pub_id", MANUAL_MODE, STRING);
   Particle.variable("MQTT_connected", BROKER_CONNECTED);
   Particle.variable("credentialsFetched", credentialsFetched);
   Particle.variable("total_messages_received", total_messages_received);
+
+  // System health variables
+  Particle.variable("system_uptime", systemUptime);
+  Particle.variable("system_status", systemStatus, STRING);
+  Particle.variable("last_error", lastError, STRING);
+
+  // CAN statistics
+  Particle.variable("can_msgs_received", canMessagesReceived);
+  Particle.variable("can_msgs_sent", canMessagesSent);
+  Particle.variable("can_errors_total", canErrorMonitor.totalErrors);
+  Particle.variable("can_recovery_count", canRecoveryCount);
+  Particle.variable("can_consecutive_errors",
+                    canErrorMonitor.consecutiveErrors);
+
+  // MQTT statistics
+  Particle.variable("mqtt_msgs_received", mqttMessagesReceived);
+  Particle.variable("mqtt_msgs_sent", mqttMessagesSent);
+  Particle.variable("mqtt_fail_count", getMQTTFailCount());
+  Particle.variable("last_heartbeat", lastHeartbeat);
+
+  // Port statistics
+  Particle.variable("active_ports", activePorts);
+  Particle.variable("docked_ports", dockedPorts);
+
+  // Dynamic port ping variables for 1-MAX_PORTS
+  for (int port = 1; port <= MAX_PORTS; port++) {
+    char varName[32];
+    snprintf(varName, sizeof(varName), "port%d_last_ping", port);
+    Particle.variable(varName, lastPingTimes[port]);
+  }
 
   Serial.printlnf("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
   Serial.printlnf("Device ID: %s", Particle.deviceID().c_str());
@@ -366,6 +431,9 @@ void handlePortDataRequests() {
       delay(100);
       return;
     }
+
+    // Update active ports count for cloud statistics
+    updateActivePortsCount();
   }
 
   unsigned long current_time = millis();
@@ -405,6 +473,10 @@ void handlePortDataRequests() {
         resetCANSuccessCounter();
         // Track transmission time for health monitoring
         lastTransmissionTime = millis();
+
+        // Update statistics
+        canMessagesSent++;
+        // Don't update ping time here - only on response
       } else {
         portFailureCount[current_poll_port]++;
         Serial.printlnf("Failed to poll port %d (failures: %d)",
@@ -470,8 +542,28 @@ void canThread() {
   Serial.printlnf("CAN processing thread started");
 
   while (true) {
+    // Check for interrupt flood recovery
+    if (interruptFloodDetected) {
+      unsigned long currentTime = millis();
+      if (currentTime - lastFloodRecovery > FLOOD_RECOVERY_INTERVAL) {
+        Serial.println("Attempting recovery from interrupt flood");
+
+        // Force emergency MCP2515 reset for stuck conditions
+        emergencyMCP2515Reset();
+
+        // Clear flood detection flags
+        interruptFloodDetected = false;
+        interruptFloodCount = 0;
+        lastFloodRecovery = currentTime;
+
+        // Re-enable interrupts
+        Serial.println("Re-enabling CAN interrupts after flood recovery");
+        attachInterrupt(CAN_INT, can_interrupt, FALLING);
+      }
+    }
+
     if (areCredentialsValid() && isMQTTConnected() && Particle.connected() &&
-        !CAN_ERROR && !can_recovery_needed) {
+        !CAN_ERROR && !can_recovery_needed && !interruptFloodDetected) {
       // Process incoming CAN messages
       handleCanQueue();
 
@@ -513,6 +605,31 @@ void port_request_thread() {
 void handleCanQueue() {
   int messagesProcessed = 0;
   const int MAX_MESSAGES_PER_LOOP = 8;
+
+  // Additional stuck queue detection
+  static unsigned long lastQueueCheck = 0;
+  static int lastMessageCount = 0;
+  unsigned long currentTime = millis();
+
+  // If queue count hasn't changed in 5 seconds but is non-zero, force reset
+  if (messageCount > 0 && messageCount == lastMessageCount &&
+      currentTime - lastQueueCheck > 5000) {
+    Serial.printlnf("CRITICAL: Queue stuck with %d messages - forcing reset",
+                    messageCount);
+    noInterrupts();
+    messageCount = 0;
+    queueHead = 0;
+    queueTail = 0;
+    queueOverflow = false;
+    interrupts();
+    logSystemError("Queue stuck - forced reset");
+    return;
+  }
+
+  if (currentTime - lastQueueCheck > 1000) {
+    lastMessageCount = messageCount;
+    lastQueueCheck = currentTime;
+  }
 
   while (messageCount > 0 && messagesProcessed < MAX_MESSAGES_PER_LOOP) {
     can_frame msg;
@@ -600,9 +717,38 @@ void processCANMessage(const can_frame &rawMessage) {
                     parsedMsg.sourcePort);
     logCANError(-1, "message_parsing");
   }
+
+  // Update CAN statistics
+  canMessagesReceived++;
+
+  // Update last ping time when we receive response from port
+  if (parsedMsg.sourcePort >= 1 && parsedMsg.sourcePort <= MAX_PORTS) {
+    updateLastPingTime(parsedMsg.sourcePort);
+  }
 }
 
 void can_interrupt() {
+  // FLOOD DETECTION: Check for interrupt storm
+  unsigned long currentTime = millis();
+
+  // Detect rapid consecutive interrupts
+  if (currentTime == lastInterruptTime) {
+    interruptFloodCount++;
+    if (interruptFloodCount > MAX_INTERRUPTS_PER_MS) {
+      // Interrupt flood detected - disable interrupts immediately
+      Serial.println(
+          "EMERGENCY: CAN interrupt flood detected - disabling interrupts");
+      detachInterrupt(CAN_INT);
+      interruptFloodDetected = true;
+      lastFloodRecovery = currentTime;
+      logSystemError("CAN interrupt flood - disabled interrupts");
+      return;
+    }
+  } else {
+    interruptFloodCount = 0;
+    lastInterruptTime = currentTime;
+  }
+
   // Minimal interrupt handler - just queue the message
   struct can_frame recMsg;
 
@@ -683,6 +829,15 @@ void can_interrupt() {
 
 void performCANRecovery() {
   Serial.printlnf("=== PERFORMING EMERGENCY CAN RECOVERY ===");
+
+  // Update statistics
+  canRecoveryCount++;
+  updateSystemStatus("CAN Recovery");
+  logSystemError("CAN recovery triggered");
+
+  // Clear flood detection state
+  interruptFloodDetected = false;
+  interruptFloodCount = 0;
 
   // Stop ALL CAN operations immediately
   CAN_ERROR = true;
@@ -815,6 +970,13 @@ void logCANError(int errorCode, const char *operation) {
   canErrorMonitor.totalErrors++;
   canErrorMonitor.lastErrorTime = currentTime;
   canErrorMonitor.consecutiveErrors++;
+
+  // Update system error tracking for cloud
+  char errorMsg[128];
+  snprintf(errorMsg, sizeof(errorMsg), "CAN Error: %s (code %d)", operation,
+           errorCode);
+  logSystemError(errorMsg);
+  updateSystemStatus("CAN Error");
 
   Serial.printlnf("CAN Error #%lu: %s failed with code %d (consecutive: %d)",
                   canErrorMonitor.totalErrors, operation, errorCode,
@@ -967,6 +1129,13 @@ void checkSystemHealth() {
 
   static unsigned long lastHealthCheck = 0;
   if (uptime - lastHealthCheck > 60000) {
+    // Update cloud statistics
+    updateActivePortsCount();
+    updateDockedPortsCount();
+    if (canErrorMonitor.consecutiveErrors == 0 && !CAN_ERROR) {
+      updateSystemStatus("Operational");
+    }
+
     Serial.printlnf("System Health - Uptime: %lu ms, Free Memory: %lu bytes",
                     uptime, freeMemory);
     Serial.printlnf("MQTT Status: %s", getMQTTStatus().c_str());
@@ -982,6 +1151,21 @@ void checkSystemHealth() {
     Serial.printlnf("CAN Errors (last minute): %d", can_error_count);
     Serial.printlnf("CAN Recovery needed: %s",
                     can_recovery_needed ? "yes" : "no");
+    Serial.printlnf("Active Ports: %d (responsive)", activePorts);
+    Serial.printlnf("Docked Ports: %d (vehicles present)", dockedPorts);
+    Serial.printlnf("CAN Messages: RX=%lu, TX=%lu", canMessagesReceived,
+                    canMessagesSent);
+
+    // Show last ping time for each port
+    for (int port = 1; port <= MAX_PORTS; port++) {
+      if (lastPingTimes[port] > 0) {
+        unsigned long timeSinceResponse = uptime - lastPingTimes[port];
+        Serial.printlnf("Port %d last response: %lu ms ago", port,
+                        timeSinceResponse);
+      } else {
+        Serial.printlnf("Port %d last response: never", port);
+      }
+    }
 
     // Force MQTT reconnection only if connection is actually broken
     if (BROKER_CONNECTED && !client.isConnected()) {
@@ -1093,6 +1277,20 @@ void canHealthMonitorThread() {
                          "restarting polling");
           markPortsUnpolled(); // Gentle restart of port polling
           canErrorMonitor.lastSuccessTime = millis(); // Reset timer
+
+          // Also check for stuck MCP2515 condition
+          if (messageCount > 10) {
+            Serial.printlnf("WARNING: High message count (%d) with no success "
+                            "- checking for stuck MCP2515",
+                            messageCount);
+
+            // Clear potentially stuck queue
+            noInterrupts();
+            messageCount = 0;
+            queueHead = 0;
+            queueTail = 0;
+            interrupts();
+          }
 
           // Give it one more cycle to verify success
           static unsigned long lastGentleRestart = 0;
@@ -1424,6 +1622,47 @@ void handleRxOverflowWithEscalation(unsigned long currentTime) {
   }
 }
 
+void updateActivePortsCount() {
+  activePorts = 0;
+  unsigned long currentTime = millis();
+  const unsigned long ACTIVE_THRESHOLD =
+      120000; // 2 minutes - port is active if responded within this time
+
+  for (int port = 1; port <= MAX_PORTS; port++) {
+    // Port is active if it has responded recently
+    if (lastPingTimes[port] > 0 &&
+        (currentTime - lastPingTimes[port]) < ACTIVE_THRESHOLD) {
+      activePorts++;
+    }
+  }
+}
+
+void updateDockedPortsCount() {
+  dockedPorts = 0;
+  for (int port = 1; port <= MAX_PORTS; port++) {
+    struct PortState *portState = getPortState(port);
+    if (portState && portState->docked) {
+      dockedPorts++;
+    }
+  }
+}
+
+void updateLastPingTime(int port) {
+  if (port >= 1 && port <= MAX_PORTS) {
+    lastPingTimes[port] = millis();
+  }
+}
+
+void logSystemError(const char *error) {
+  strncpy(lastError, error, sizeof(lastError) - 1);
+  lastError[sizeof(lastError) - 1] = '\0';
+}
+
+void updateSystemStatus(const char *status) {
+  strncpy(systemStatus, status, sizeof(systemStatus) - 1);
+  systemStatus[sizeof(systemStatus) - 1] = '\0';
+}
+
 void handleSerialCommands() {
   if (Serial.available()) {
     String command = Serial.readStringUntil('\n');
@@ -1453,6 +1692,32 @@ void handleSerialCommands() {
     } else if (command == "MQTT_HEARTBEAT") {
       Serial.println("Sending MQTT heartbeat...");
       publishCloud("H,0,1");
+    } else if (command == "EMERGENCY_MCP2515_RESET") {
+      Serial.println("Forcing emergency MCP2515 reset...");
+      emergencyMCP2515Reset();
+    } else if (command == "PORT_STATS") {
+      Serial.println("=== Port Response Statistics ===");
+      Serial.printlnf("Active Ports: %d (responsive within 2 minutes)",
+                      activePorts);
+      Serial.printlnf("Docked Ports: %d (vehicles present)", dockedPorts);
+      Serial.println("Individual port status:");
+      for (int port = 1; port <= MAX_PORTS; port++) {
+        struct PortState *portState = getPortState(port);
+        bool isActive = false;
+        if (lastPingTimes[port] > 0) {
+          unsigned long timeSinceResponse = millis() - lastPingTimes[port];
+          isActive = timeSinceResponse < 120000; // 2 minutes
+          Serial.printlnf(
+              "Port %d: Last response %lu ms ago, Docked: %s, Active: %s", port,
+              timeSinceResponse,
+              (portState && portState->docked) ? "yes" : "no",
+              isActive ? "yes" : "no");
+        } else {
+          Serial.printlnf(
+              "Port %d: No responses received, Docked: %s, Active: no", port,
+              (portState && portState->docked) ? "yes" : "no");
+        }
+      }
     } else if (command == "SYSTEM_STATUS") {
       Serial.printlnf("=== System Status ===");
       Serial.printlnf("Free Memory: %lu bytes", System.freeMemory());
@@ -1469,6 +1734,8 @@ void handleSerialCommands() {
       Serial.println("MQTT_STATUS - Show MQTT connection details");
       Serial.println("MQTT_RECONNECT - Force MQTT reconnection");
       Serial.println("MQTT_HEARTBEAT - Send test heartbeat");
+      Serial.println("PORT_STATS - Show port response statistics");
+      Serial.println("EMERGENCY_MCP2515_RESET - Force emergency CAN recovery");
       Serial.println("SYSTEM_STATUS - Show system health");
       Serial.println("HELP - Show this help");
     } else if (command.length() > 0) {

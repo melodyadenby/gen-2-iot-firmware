@@ -10,6 +10,11 @@
 #include "utils.h"
 #include <ArduinoJson.h>
 
+// External statistics variables from main.ino
+extern unsigned long mqttMessagesReceived;
+extern unsigned long mqttMessagesSent;
+extern unsigned long lastHeartbeat;
+
 // Global MQTT variables
 char MQTT_CLIENT_ID[45];
 char MQTT_PUB_TOPIC[256];
@@ -271,6 +276,8 @@ void publishCloud(String message) {
   if (res) {
     last_mqtt_send = millis(); // Update the last successful send time
     MQTT_FAIL_COUNT = 0;       // Reset failure count after success
+    mqttHealthy = true;        // Mark as healthy on successful publish
+    mqttMessagesSent++;        // Update statistics
   } else {
     MQTT_FAIL_COUNT++;
     lastHeartbeatRetryTime = millis(); // Store last failed attempt time
@@ -289,6 +296,9 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length) {
   lastMqttMessageReceived = millis();
   // Don't automatically mark as healthy just from receiving messages
   // Health is determined by connection state, not message frequency
+
+  // Update statistics
+  mqttMessagesReceived++;
 
   // Parse the message by comma delimiter
   char *token;
@@ -611,6 +621,7 @@ void sendHeartbeatIfNeeded(unsigned long currentTime) {
                         MQTT_FAIL_COUNT + 1);
         publishCloud("H,0,1");
         lastHeartbeatRetryTime = currentTime;
+        lastHeartbeat = currentTime;
       }
     } else {
       Serial.printlnf("MQTT heartbeat failed %d times. Forcing reconnection...",

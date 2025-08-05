@@ -137,6 +137,104 @@ handleSystemLoop()
 └── updateSystemStatus()
 ```
 
+## Cloud Statistics & Monitoring
+
+### Comprehensive Device Telemetry
+
+The system exposes extensive real-time statistics via Particle Cloud variables for remote monitoring and diagnostics:
+
+#### **System Health Variables**
+
+```cpp
+Particle.variable("system_uptime", systemUptime);           // Milliseconds since boot
+Particle.variable("free_memory", System.freeMemory());      // Available RAM
+Particle.variable("system_status", systemStatus, STRING);   // Current status
+Particle.variable("last_error", lastError, STRING);         // Last error message
+```
+
+#### **CAN Communication Statistics**
+
+```cpp
+Particle.variable("can_msgs_received", canMessagesReceived);     // Total CAN RX
+Particle.variable("can_msgs_sent", canMessagesSent);           // Total CAN TX
+Particle.variable("can_errors_total", canErrorMonitor.totalErrors);
+Particle.variable("can_recovery_count", canRecoveryCount);     // Number of recoveries
+Particle.variable("can_consecutive_errors", canErrorMonitor.consecutiveErrors);
+```
+
+#### **MQTT Communication Statistics**
+
+```cpp
+Particle.variable("mqtt_msgs_received", mqttMessagesReceived);  // MQTT commands received
+Particle.variable("mqtt_msgs_sent", mqttMessagesSent);         // MQTT publishes sent
+Particle.variable("mqtt_fail_count", getMQTTFailCount());      // Failed publishes
+Particle.variable("last_heartbeat", lastHeartbeat);           // Last heartbeat time
+```
+
+#### **Port Activity & Health**
+
+```cpp
+Particle.variable("active_ports", activePorts);              // Responsive ports (within 2 min)
+Particle.variable("docked_ports", dockedPorts);             // Ports with vehicles present
+// Dynamic port response tracking (1 to MAX_PORTS)
+Particle.variable("port1_last_ping", lastPingTimes[1]);     // Last response from port 1
+Particle.variable("port2_last_ping", lastPingTimes[2]);     // Last response from port 2
+// ... continues for all ports
+```
+
+### Enhanced MQTT Health Monitoring
+
+#### **Connection-Based Health**
+
+The MQTT health monitoring has been redesigned for IoT devices that may not receive messages for hours:
+
+- **Health Criteria**: Based on connection state and publish success, not message frequency
+- **No False Alarms**: Hours without messages is considered normal for IoT devices
+- **Proactive Detection**: Monitors actual connection health vs connection flags
+
+#### **Automatic Heartbeat System**
+
+```cpp
+// Sends "H,0,1" every hour automatically with retry logic
+const unsigned long MQTT_HEARTBEAT_INTERVAL = 60 * 60 * 1000; // 1 hour
+const unsigned long MQTT_HEARTBEAT_RETRY_INTERVAL = 5 * 1000; // 5 seconds
+const int MQTT_HEARTBEAT_MAX_FAILURES = 5;
+```
+
+### Port Response Tracking
+
+#### **Response-Based Monitoring**
+
+Port ping times track actual **responses FROM ports**, not requests TO ports:
+
+```cpp
+// Updated when IoT RECEIVES response from port (not when sending request)
+void processCANMessage(can_frame msg) {
+    if (parsedMsg.sourcePort >= 1 && parsedMsg.sourcePort <= MAX_PORTS) {
+        updateLastPingTime(parsedMsg.sourcePort); // Tracks bidirectional communication
+    }
+}
+```
+
+#### **Active vs Docked Ports**
+
+- **Active Ports**: Ports that have responded within 2 minutes (communication working)
+- **Docked Ports**: Ports that have vehicles physically present
+- **Health Indicator**: `active_ports == docked_ports` means all docked vehicles are responsive
+
+### Debug Commands
+
+Enhanced serial debug interface for real-time diagnostics:
+
+```
+MQTT_STATUS     - Complete MQTT connection diagnostics
+MQTT_RECONNECT  - Force immediate reconnection
+MQTT_HEARTBEAT  - Send test heartbeat
+PORT_STATS      - Show port response statistics with active/docked status
+SYSTEM_STATUS   - Overall system health
+HELP           - Show available commands
+```
+
 ## Configuration Management
 
 ### Environment Configuration
@@ -311,6 +409,35 @@ void hardwareWatchdogHandler()
 }
 ```
 
+### **Enhanced RX Overflow Recovery**
+
+#### **Escalating Recovery System**
+
+The system now includes sophisticated RX buffer overflow handling:
+
+```cpp
+// Tracks RX overflow occurrences and effectiveness of buffer clearing
+struct CANErrorMonitor {
+    int rxOverflowCount;
+    unsigned long firstRxOverflowTime;
+    unsigned long lastRxOverflowClear;
+}
+```
+
+#### **Automatic System Recovery**
+
+- **Level 1**: Clear RX buffers (standard approach)
+- **Level 2**: Track overflow frequency and persistence
+- **Level 3**: Force system restart if buffer clearing fails
+
+#### **Restart Triggers**
+
+The system will automatically restart if:
+
+- 5+ overflows in 30 seconds AND buffer clearing isn't helping
+- 3+ overflows in 5+ seconds with recurring overflow within 1 second of clearing
+- Persistent overflow despite repeated buffer clearing attempts
+
 ### **Testing & Validation**
 
 #### **Error Condition Testing**
@@ -319,6 +446,7 @@ void hardwareWatchdogHandler()
 2. **Error Recovery Test** - Send messages to disconnected ports
 3. **Corruption Test** - Monitor detection of invalid CAN messages
 4. **Load Test** - Verify stability under heavy CAN traffic
+5. **RX Overflow Test** - Verify automatic restart on persistent overflow
 
 #### **Recovery Validation**
 
@@ -326,16 +454,46 @@ void hardwareWatchdogHandler()
 - Normal operations resume after error clearance
 - No memory leaks during recovery cycles
 - Proper state cleanup between recovery attempts
+- RX overflow recovery triggers within 12 seconds of detection
+
+### **Cloud Monitoring Benefits**
+
+#### **Real-Time Diagnostics**
+
+- **Remote Monitoring**: All statistics accessible via Particle Cloud API
+- **Historical Tracking**: Cloud variables provide trend analysis
+- **Proactive Alerts**: Set up notifications based on error counts or response times
+- **Performance Metrics**: Monitor CAN traffic, MQTT performance, and port responsiveness
+
+#### **Troubleshooting Capabilities**
+
+```
+// Example cloud variable queries
+port4_last_ping: 45000    → Port 4 hasn't responded in 45 seconds (problem!)
+active_ports: 2           → Only 2 ports responding
+docked_ports: 4           → 4 vehicles present
+can_recovery_count: 12    → Multiple CAN recoveries (investigate hardware)
+mqtt_fail_count: 3       → MQTT publish issues
+```
+
+#### **Health Monitoring Scenarios**
+
+- **Healthy System**: `active_ports == docked_ports`, low error counts
+- **Communication Issues**: `active_ports < docked_ports`, old ping times
+- **Hardware Problems**: High `can_recovery_count`, frequent errors
+- **Network Issues**: High `mqtt_fail_count`, old `last_heartbeat`
 
 ## Future Enhancements
 
-This reorganization and safety system enables:
+This reorganization, safety system, and comprehensive monitoring enables:
 
 1. **Unit Testing** - Each module can be tested independently
 2. **Mock Hardware** - Hardware interfaces can be mocked for testing
 3. **Feature Flags** - Easy addition of feature toggles
 4. **Advanced Logging** - Structured error logging and analytics
 5. **OTA Updates** - Modular structure supports partial updates
-6. **Performance Monitoring** - Real-time metrics and diagnostics
-7. **Predictive Maintenance** - Error pattern analysis
-8. **Remote Diagnostics** - Cloud-based health monitoring
+6. **Performance Monitoring** - Real-time metrics and diagnostics via cloud
+7. **Predictive Maintenance** - Error pattern analysis and trend monitoring
+8. **Remote Diagnostics** - Cloud-based health monitoring and troubleshooting
+9. **Dashboard Integration** - Grafana, custom dashboards using Particle API
+10. **Automated Alerting** - Notifications based on cloud variable thresholds
