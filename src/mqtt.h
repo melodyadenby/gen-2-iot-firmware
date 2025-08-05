@@ -48,6 +48,7 @@ extern MQTT client;
 
 // MQTT Functions
 void handleMQTTClientLoop();
+void handleMQTT();
 void checkMQTTStat();
 void attemptReconnect();
 void resetRetryLogic();
