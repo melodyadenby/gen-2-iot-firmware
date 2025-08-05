@@ -76,6 +76,9 @@ void initializeMQTT() {
 
 void handleMQTTClientLoop() {
   client.loop();
+}
+
+void handleMQTT() {
   BROKER_CONNECTED = client.isConnected();
   checkMQTTStat();
   checkMQTTHealth();
