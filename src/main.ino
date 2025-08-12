@@ -54,6 +54,12 @@ bool interruptHealthy = true;
 const unsigned long TX_RX_IMBALANCE_TIMEOUT =
     PORT_CHECK_INTERVAL * 4; // 40s - expect responses after port polling cycle
 
+// Global VIN traffic monitoring variables (for cloud visibility)
+int g_pendingVINRequests = 0;
+bool g_vinFloodProtection = false;
+int g_consecutiveVINFailures = 0;
+unsigned long g_lastVINRequestTime = 0;
+int g_activeVINRequests = 0;
 // CAN Error Monitoring Constants
 const int CAN_ERROR_THRESHOLD = 5; // Max consecutive errors before recovery
 const unsigned long CAN_ERROR_WINDOW = 10000; // 10 seconds error window
@@ -137,7 +143,7 @@ void setup() {
 void loop() {
   ApplicationWatchdog::checkin(); // Feed hardware watchdog
   DeviceInfoLedger::instance().loop();
-handleMQTTClientLoop();
+  handleMQTTClientLoop();
 
   static unsigned long lastLoopTime = 0;
   unsigned long currentTime = millis();
@@ -183,6 +189,12 @@ void initializeSystem() {
   Particle.variable("MQTT_connected", BROKER_CONNECTED);
   Particle.variable("credentialsFetched", credentialsFetched);
   Particle.variable("total_messages_received", total_messages_received);
+
+  // VIN traffic monitoring variables
+  Particle.variable("pending_vins", g_pendingVINRequests);
+  Particle.variable("active_vins", g_activeVINRequests);
+  Particle.variable("vin_flood_protection", g_vinFloodProtection);
+  Particle.variable("last_vin_request", g_lastVINRequestTime);
 
   Serial.printlnf("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
   Serial.printlnf("Device ID: %s", Particle.deviceID().c_str());
@@ -343,6 +355,18 @@ void handlePortDataRequests() {
   static bool pollingDisabled = false;
   static unsigned long pollingDisabledTime = 0;
 
+  // PREVENTIVE VIN flood protection - conservative approach
+  static unsigned long lastVINRequestTime = 0;
+  static int pendingVINRequests = 0;
+  static unsigned long lastHighTrafficCheck = 0;
+
+  // Conservative VIN request limiting (prevent silent lockups)
+  static int activeVINRequests = 0; // Currently processing VIN requests
+  static unsigned long vinRequestSlots[3] = {
+      0, 0, 0}; // Track up to 3 concurrent VINs
+  static const int MAX_CONCURRENT_VINS =
+      2; // Conservative: only 2 VIN requests at once
+
   // Check if we should re-enable polling after errors cleared
   if (pollingDisabled) {
     unsigned long waitTime = 5000; // Default 5 seconds
@@ -381,64 +405,183 @@ void handlePortDataRequests() {
 
   // Check if enough time has passed since last poll
   if (current_time - last_poll_send_time < POLL_STAGGER_DELAY) {
-    return;
-  }
+    // PREVENTIVE: Count and limit VIN requests to prevent silent lockups
+    if (current_time - lastHighTrafficCheck >= 3000) { // Check every 3 seconds
+      pendingVINRequests = 0;
+      activeVINRequests = 0;
 
-  // Check if portFlagHandler is available
-  if (!portFlagHandler) {
-    Serial.printlnf("portFlagHandler not initialized");
-    return;
-  }
-
-  // Find next port that needs polling
-  for (int attempts = 0; attempts < MAX_PORTS; attempts++) {
-    if (current_poll_port > MAX_PORTS) {
-      current_poll_port = 1; // Wrap around
-    }
-
-    if (!hasPortBeenPolled(current_poll_port)) {
-      bool success = portFlagHandler->sendGetPortData(current_poll_port);
-
-      if (success) {
-        markPortPolled(current_poll_port);
-        // Reset failure count on success
-        portFailureCount[current_poll_port] = 0;
-        resetCANSuccessCounter();
-        // Track transmission time for health monitoring
-        lastTransmissionTime = millis();
-      } else {
-        portFailureCount[current_poll_port]++;
-        Serial.printlnf("Failed to poll port %d (failures: %d)",
-                        current_poll_port, portFailureCount[current_poll_port]);
-
-        // Skip this port if it's failing repeatedly
-        if (portFailureCount[current_poll_port] >= 3) {
-          Serial.printlnf(
-              "Port %d has failed %d times - skipping for this cycle",
-              current_poll_port, portFailureCount[current_poll_port]);
-          markPortPolled(current_poll_port); // Mark as "polled" to skip it
-          portFailureCount[current_poll_port] = 0; // Reset for next cycle
+      // Clear expired VIN request slots (assume 15 seconds max for VIN
+      // completion)
+      for (int i = 0; i < 3; i++) {
+        if (vinRequestSlots[i] > 0 &&
+            (current_time - vinRequestSlots[i]) > 15000) {
+          vinRequestSlots[i] = 0; // Clear expired slot
+        } else if (vinRequestSlots[i] > 0) {
+          activeVINRequests++; // Count active VIN requests
         }
-
-        logCANError(-1, "port_polling");
-
-        // If too many consecutive errors, trigger IMMEDIATE recovery
-        if (canErrorMonitor.consecutiveErrors >= 3) {
-          Serial.printlnf("CRITICAL: Immediate CAN recovery needed");
-          can_recovery_needed = true;
-          pollingDisabled = true;
-          pollingDisabledTime = millis();
-          return; // Stop polling immediately
-        }
-
-        // Hardware watchdog will handle timeout protection automatically
       }
 
-      last_poll_send_time = current_time;
-      current_poll_port++; // Move to next port for next iteration
-      break;               // Only send one request per cycle
-    } else {
-      current_poll_port++;
+      // Count pending VIN flags
+      for (int i = 1; i <= MAX_PORTS; i++) {
+        if (isValidPort(i)) {
+          PortState *state = getPortState(i);
+          if (state && state->vin_request_flag) {
+            pendingVINRequests++;
+          }
+        }
+      }
+
+      // Update global variables for cloud monitoring
+      g_pendingVINRequests = pendingVINRequests;
+      g_activeVINRequests = activeVINRequests;
+
+      lastHighTrafficCheck = current_time;
+
+      Serial.printlnf("VIN Status: %d pending, %d active", pendingVINRequests,
+                      activeVINRequests);
+    }
+
+    // CONSERVATIVE delay calculation to prevent bus saturation
+    unsigned long smart_delay = POLL_STAGGER_DELAY; // Default 1000ms
+
+    // MUCH more conservative VIN spacing to prevent silent lockups
+    if (pendingVINRequests >= 3) {
+      smart_delay = 8000; // 8 second delay when 3+ VIN requests pending
+    } else if (pendingVINRequests >= 1) {
+      smart_delay = 5000; // 5 second delay when any VIN requests pending
+    }
+
+    // Aggressive delay for higher port addresses (they have 1200ms+ response
+    // delays)
+    if (current_poll_port > 10) {
+      smart_delay += 3000; // Extra 3 seconds for ports 11-16
+    } else if (current_poll_port > 8) {
+      smart_delay += 2000; // Extra 2 seconds for ports 9-10
+    }
+
+    // LONG buffer after VIN requests - accounts for full 3-message sequence +
+    // port delays
+    if (current_time - lastVINRequestTime <
+        10000) {           // Within 10 seconds of VIN request
+      smart_delay += 5000; // Add 5 second buffer minimum
+    }
+
+    // If any VIN requests are actively being processed, be extra conservative
+    if (activeVINRequests > 0) {
+      smart_delay += 3000; // Additional 3 seconds when VINs are processing
+    }
+
+    // Check if enough time has passed since last poll using smart delay
+    if (current_time - last_poll_send_time < smart_delay) {
+      return;
+    }
+
+    // Check if portFlagHandler is available
+    if (!portFlagHandler) {
+      Serial.printlnf("portFlagHandler not initialized");
+      return;
+    }
+
+    // Find next port that needs polling
+    for (int attempts = 0; attempts < MAX_PORTS; attempts++) {
+      if (current_poll_port > MAX_PORTS) {
+        current_poll_port = 1; // Wrap around
+      }
+
+      if (!hasPortBeenPolled(current_poll_port)) {
+        // Check if this port has a pending VIN request
+        bool isVINRequest = false;
+        if (isValidPort(current_poll_port)) {
+          PortState *state = getPortState(current_poll_port);
+          if (state) {
+            isVINRequest = state->vin_request_flag;
+          }
+        }
+
+        // PREVENTIVE: Skip VIN requests if too many are already active
+        if (isVINRequest && activeVINRequests >= MAX_CONCURRENT_VINS) {
+          Serial.printlnf("PREVENTIVE: Skipping VIN request for port %d - %d "
+                          "already active (max %d)",
+                          current_poll_port, activeVINRequests,
+                          MAX_CONCURRENT_VINS);
+          current_poll_port++; // Move to next port
+          continue;            // Skip this VIN request
+        }
+
+        bool success = portFlagHandler->sendGetPortData(current_poll_port);
+
+        if (success) {
+          markPortPolled(current_poll_port);
+          // Reset failure count on success
+          portFailureCount[current_poll_port] = 0;
+          resetCANSuccessCounter();
+          // Track transmission time for health monitoring
+          lastTransmissionTime = millis();
+
+          // Track VIN request timing and reserve slot
+          if (isVINRequest) {
+            lastVINRequestTime = current_time;
+            g_lastVINRequestTime = current_time;
+
+            // Reserve a VIN request slot
+            for (int i = 0; i < 3; i++) {
+              if (vinRequestSlots[i] == 0) {
+                vinRequestSlots[i] = current_time;
+                break;
+              }
+            }
+
+            Serial.printlnf("VIN request sent to port %d - slot reserved, %d "
+                            "active, %d pending",
+                            current_poll_port, activeVINRequests + 1,
+                            pendingVINRequests);
+          }
+        } else {
+          portFailureCount[current_poll_port]++;
+          Serial.printlnf("Failed to poll port %d (failures: %d)",
+                          current_poll_port,
+                          portFailureCount[current_poll_port]);
+
+          // Skip this port if it's failing repeatedly
+          if (portFailureCount[current_poll_port] >= 3) {
+            Serial.printlnf(
+                "Port %d has failed %d times - skipping for this cycle",
+                current_poll_port, portFailureCount[current_poll_port]);
+            markPortPolled(current_poll_port); // Mark as "polled" to skip it
+            portFailureCount[current_poll_port] = 0; // Reset for next cycle
+          }
+
+          logCANError(-1, "port_polling");
+
+          // If too many consecutive errors, trigger IMMEDIATE recovery
+          if (canErrorMonitor.consecutiveErrors >= 3) {
+            Serial.printlnf("CRITICAL: Immediate CAN recovery needed");
+            can_recovery_needed = true;
+            pollingDisabled = true;
+            pollingDisabledTime = millis();
+            return; // Stop polling immediately
+          }
+
+          // PREVENTIVE: If too many VIN requests pending, pause polling
+          // entirely
+          if (pendingVINRequests >= 5) {
+            Serial.printlnf("PREVENTIVE: Too many VIN requests (%d) - pausing "
+                            "polling to prevent lockup",
+                            pendingVINRequests);
+            pollingDisabled = true;
+            pollingDisabledTime = millis();
+            return;
+          }
+
+          // Hardware watchdog will handle timeout protection automatically
+        }
+
+        last_poll_send_time = current_time;
+        current_poll_port++; // Move to next port for next iteration
+        break;               // Only send one request per cycle
+      } else {
+        current_poll_port++;
+      }
     }
   }
 }
@@ -824,8 +967,8 @@ void logCANError(int errorCode, const char *operation) {
   // Check for specific error codes that indicate controller corruption
   if (errorCode == 0xA || errorCode == 10 || errorCode == 0xF ||
       errorCode == 15) {
-    Serial.printlnf(
-        "CRITICAL: Detected ERROR_A/ERROR_F - MCP2515 controller corruption!");
+    Serial.printlnf("CRITICAL: Detected ERROR_A/ERROR_F - MCP2515 controller "
+                    "corruption!");
     Serial.printlnf(
         "Triggering immediate CAN recovery to prevent system freeze");
     can_recovery_needed = true;
@@ -872,9 +1015,9 @@ void resetCANSuccessCounter() {
 
     // Only reset attempts if we've had sustained success (30 seconds)
     if (timeSinceRecovery > 30000) {
-      Serial.printlnf(
-          "Resetting recovery attempt counter after sustained success (%lu ms)",
-          timeSinceRecovery);
+      Serial.printlnf("Resetting recovery attempt counter after sustained "
+                      "success (%lu ms)",
+                      timeSinceRecovery);
       canErrorMonitor.recoveryAttempts = 0;
       canErrorMonitor.adaptiveMode =
           false; // Disable adaptive mode on sustained success
@@ -891,7 +1034,8 @@ void resetCANSuccessCounter() {
 // ========================================
 // Watchdog Functions
 // ========================================
-// Software watchdog functions removed - using hardware ApplicationWatchdog only
+// Software watchdog functions removed - using hardware ApplicationWatchdog
+// only
 
 // ========================================
 // Utility Functions
@@ -1055,7 +1199,8 @@ void canHealthMonitorThread() {
         }
       }
 
-      // Reset consecutive error count if enough time has passed without errors
+      // Reset consecutive error count if enough time has passed without
+      // errors
       if (currentTime - canErrorMonitor.lastErrorTime > CAN_ERROR_WINDOW) {
         if (canErrorMonitor.consecutiveErrors > 0) {
           Serial.printlnf(
@@ -1080,7 +1225,8 @@ void canHealthMonitorThread() {
       if (canErrorMonitor.lastSuccessTime > 0 &&
           currentTime - canErrorMonitor.lastSuccessTime >
               PORT_CHECK_INTERVAL * 2 + 5000) {
-        // Instead of emergency reset, check if CAN hardware is actually healthy
+        // Instead of emergency reset, check if CAN hardware is actually
+        // healthy
         if (currentFlags == 0 && canErrorMonitor.consecutiveErrors == 0) {
           // CAN hardware looks fine, maybe just need to restart polling
           Serial.println("No recent CAN success but hardware looks healthy - "
@@ -1156,12 +1302,12 @@ void canHealthMonitorThread() {
 
       // // Log CAN error flags if any are detected (less frequent)
       // static unsigned long lastFlagLog = 0;
-      // if (currentFlags != 0 && currentTime - lastFlagLog > 30000) // Every 30
-      // seconds
+      // if (currentFlags != 0 && currentTime - lastFlagLog > 30000) // Every
+      // 30 seconds
       // {
       //   Serial.printlnf("MCP2515 hardware error flags detected: 0x%02X",
-      //   currentFlags); getCANErrorFlags(true); // Debug output with detailed
-      //   flag breakdown lastFlagLog = currentTime;
+      //   currentFlags); getCANErrorFlags(true); // Debug output with
+      //   detailed flag breakdown lastFlagLog = currentTime;
       // }
 
       lastHealthCheck = currentTime;
@@ -1251,7 +1397,8 @@ void checkInterruptHealth() {
     } else {
       Serial.printlnf(
           "MCP2515 no pending interrupts - may be normal quiet period");
-      // Update last interrupt time to prevent false alarms during quiet periods
+      // Update last interrupt time to prevent false alarms during quiet
+      // periods
       lastInterruptTime = currentTime - (INTERRUPT_TIMEOUT / 2);
     }
   }
@@ -1328,15 +1475,17 @@ void checkTransmissionReceptionBalance() {
         PORT_CHECK_INTERVAL * 5; // 50s grace period after polling cycle
   }
 
-  // If we've transmitted recently but haven't received anything in much longer
+  // If we've transmitted recently but haven't received anything in much
+  // longer
   if (timeSinceLastTX < PORT_CHECK_INTERVAL &&
       timeSinceLastRX > dynamicTxRxTimeout && !CAN_ERROR &&
       !can_recovery_needed) {
-    // Before attempting interrupt recovery, check if it's just buffer overflow
+    // Before attempting interrupt recovery, check if it's just buffer
+    // overflow
     uint8_t errorFlags = getCANErrorFlags(false);
 
-    // If it's RX overflow, that's normal under high traffic - not an interrupt
-    // failure
+    // If it's RX overflow, that's normal under high traffic - not an
+    // interrupt failure
     if (errorFlags & 0x40) { // RX0OVR flag
       handleRxOverflowWithEscalation(currentTime);
       return;

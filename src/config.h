@@ -39,7 +39,7 @@ const int SEC_TO_MS_MULTIPLIER = 1000;
 #endif
 
 // System Configuration
-#define PRODUCT_VERSION_NUM 36
+#define PRODUCT_VERSION_NUM 37
 #define MAX_PORTS 16
 
 // Timeout Configuration
