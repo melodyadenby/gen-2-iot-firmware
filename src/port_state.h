@@ -53,6 +53,10 @@ struct PortState
   char temp[8];                  // port temperature in celsius
   char fan_speed[4];             // PWM fan speed
   char port_firmware_version[9]; // firmware version of the port
+  bool await_refresh_port_update = false; // Flag to track waiting for R data from port
+  bool await_refresh_port_vin = false;    // Flag to track waiting for VIN data from port
+  bool send_refresh_port_update = false;  // Flag to signal we should send updated port state via MQTT
+  unsigned long refresh_request_time = 0; // Time when refresh was requested
 };
 
 // Global Port State

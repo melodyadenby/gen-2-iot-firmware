@@ -88,6 +88,12 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message)
     state->valid_vehicle_tag = message.status.tagValid;
     state->fatal_NFC_error = message.status.fatalNFCError;
     markPortPolled(port);
+    
+    // If this is a response to a refresh command, clear the flag
+    if (state->await_refresh_port_update) {
+      state->await_refresh_port_update = false;
+      Serial.printlnf("Port %d refresh data received", port);
+    }
   }
 
   // Clear VIN if vehicle is no longer docked (handles undocking without unlock)
@@ -215,6 +221,12 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message)
 
   // Check for partial VIN timeout (30 seconds)
   const unsigned long VIN_TIMEOUT = 30000;
+  
+  // If this is a response to a refresh VIN request, clear the flag
+  if (state->await_refresh_port_vin) {
+    state->await_refresh_port_vin = false;
+    Serial.printlnf("Port %d refresh VIN received", port);
+  }
   if (strlen(state->VIN) > 0 && strlen(state->VIN) < VIN_LENGTH)
   {
     unsigned long timeSinceLastChunk = millis() - state->send_vin_request_timer;
