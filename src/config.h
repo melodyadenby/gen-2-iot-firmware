@@ -5,7 +5,7 @@
 #include "Particle.h"
 
 // Version and Device Info
-#define BUILD_VERSION "Gen 0.2.5"
+#define BUILD_VERSION "Gen 1.0.2"
 
 // Time Conversion Constants
 const int MIN_TO_MS_MULTIPLIER = 60000;
@@ -39,7 +39,7 @@ const int SEC_TO_MS_MULTIPLIER = 1000;
 #endif
 
 // System Configuration
-#define PRODUCT_VERSION_NUM 37
+#define PRODUCT_VERSION_NUM 39
 #define MAX_PORTS 16
 
 // Timeout Configuration

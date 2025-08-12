@@ -608,10 +608,10 @@ void PortFlagHandler::handleCommandError(int port, const char *command,
   Serial.printlnf("CAN ERROR on port %d for command %s (error: %d)", port,
                   command, errorCode);
 
-  char buffer[64];
-  snprintf(buffer, sizeof(buffer), "CAN_ERROR,%d,%s,%d", port, command,
-           errorCode);
-  publishToCloud(buffer);
+  // char buffer[64];
+  // snprintf(buffer, sizeof(buffer), "CAN_ERROR,%d,%s,%d", port, command,
+  //          errorCode);
+  // publishToCloud(buffer);
 }
 
 bool PortFlagHandler::canRetryCommand(unsigned long lastAttemptTime,
