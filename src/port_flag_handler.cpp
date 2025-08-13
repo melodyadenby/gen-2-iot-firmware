@@ -10,34 +10,31 @@
 PortFlagHandler::PortFlagHandler(PortStateManager *manager)
     : portStateManager(manager), currentPort(1) {}
 
-void PortFlagHandler::processAllPortFlags()
-{
+void PortFlagHandler::processAllPortFlags() {
   // Process flags for all ports in round-robin fashion
-  for (int i = 0; i < MAX_PORTS; i++)
-  {
+  for (int i = 0; i < MAX_PORTS; i++) {
     int port = getNextPort();
-    if (hasPortPendingFlags(port))
-    {
+    if (hasPortPendingFlags(port)) {
       processPortFlags(port);
     }
   }
 }
 
-void PortFlagHandler::processPortFlags(int port)
-{
-  if (!isValidPort(port))
-  {
+void PortFlagHandler::processPortFlags(int port) {
+  if (!isValidPort(port)) {
     return;
   }
 
   PortState *state = getPortState(port);
-  if (!state)
-  {
+  if (!state) {
     return;
   }
 
   // Check for partial VIN timeout
   checkVINTimeout(port, state);
+
+  // Check for VIN completion
+  checkVINCompletion(port, state);
 
   // logFlagActivity(port, "PROCESSING", "Starting flag processing");
 
@@ -62,72 +59,110 @@ void PortFlagHandler::processPortFlags(int port)
   checkCommandTimeouts(port);
 }
 
-void PortFlagHandler::handleVINRequest(int port)
-{
+void PortFlagHandler::handleVINRequest(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->vin_request_flag)
-  {
+  if (!state || !state->vin_request_flag) {
+    return;
+  }
+
+  // Check retry timing is handled below with exponential backoff
+  unsigned long currentTime = millis();
+
+  // Calculate retry delay with smart spacing to prevent alignment
+  unsigned long retryDelay = 15000; // Default 15 seconds for first 3 attempts
+  if (state->vin_request_retry_count >= 3) {
+    // Base persistent delay: 30 seconds
+    retryDelay = 30000;
+
+    // Add port-based spacing to prevent alignment (2 seconds per port)
+    retryDelay += (port * 2000);
+
+    // Add pseudo-random jitter based on port and attempt count (0-5 seconds)
+    unsigned long jitter =
+        ((port * state->vin_request_retry_count * 1117) % 5000);
+    retryDelay += jitter;
+
+    // Check system load and increase delay if many VIN requests pending
+    int pendingVINCount = 0;
+    for (int i = 1; i <= MAX_PORTS; i++) {
+      PortState *checkState = getPortState(i);
+      if (checkState && checkState->vin_request_flag) {
+        pendingVINCount++;
+      }
+    }
+
+    // Add system load backoff (extra 5 seconds per pending VIN beyond 2)
+    if (pendingVINCount > 2) {
+      unsigned long loadBackoff = (pendingVINCount - 2) * 5000;
+      retryDelay += loadBackoff;
+      Serial.printlnf(
+          "Port %d - LOAD BACKOFF: Adding %lu ms for %d pending VINs", port,
+          loadBackoff, pendingVINCount);
+    }
+
+    Serial.printlnf("Port %d - PERSISTENT MODE: VIN retry attempt %d (never "
+                    "give up, %lu ms intervals with spacing)",
+                    port, state->vin_request_retry_count + 1, retryDelay);
+  }
+
+  // Check if enough time has passed for retry
+  if (state->send_vin_request_timer > 0 &&
+      (currentTime - state->send_vin_request_timer) < retryDelay) {
     return;
   }
 
   logFlagActivity(port, "VIN_REQUEST", "Sending VIN request");
+  if (state->vin_request_retry_count < 3) {
+    Serial.printlnf("Port %d - VIN request attempt %d/3", port,
+                    state->vin_request_retry_count + 1);
+  } else {
+    Serial.printlnf("Port %d - VIN persistent retry attempt %d (30s intervals)",
+                    port, state->vin_request_retry_count + 1);
+  }
 
   if (sendPortCommand(port, 'K', nullptr, 10 * SEC_TO_MS_MULTIPLIER) ==
-      ERROR_OK)
-  {
-    state->vin_request_flag = false;
-    state->send_vin_request_timer = millis();
-  }
-  else
-  {
+      ERROR_OK) {
+    // DON'T clear the flag yet - wait for actual VIN response
+    state->vin_request_retry_count++;
+    state->send_vin_request_timer = currentTime;
+  } else {
+    state->vin_request_retry_count++;
+    state->send_vin_request_timer = currentTime;
     handleCommandError(port, "VIN_REQUEST", -1);
   }
 }
 
-void PortFlagHandler::handleUnlockCommand(int port)
-{
+void PortFlagHandler::handleUnlockCommand(int port) {
   PortState *state = getPortState(port);
-  if (!state)
-  {
+  if (!state) {
     return;
   }
 
-  if (state->emergency_exit_flag)
-  {
+  if (state->emergency_exit_flag) {
     logFlagActivity(port, "EMERGENCY_EXIT", "Processing emergency unlock");
 
-    if (sendPortCommand(port, 'U', "0", 3 * SEC_TO_MS_MULTIPLIER) == ERROR_OK)
-    {
+    if (sendPortCommand(port, 'U', "0", 3 * SEC_TO_MS_MULTIPLIER) == ERROR_OK) {
       state->send_unlock_flag = false;
       state->check_unlock_status = true;
-    }
-    else
-    {
+    } else {
       handleCommandError(port, "EMERGENCY_UNLOCK", -1);
     }
-  }
-  else if (state->send_unlock_flag)
-  {
+  } else if (state->send_unlock_flag) {
     logFlagActivity(port, "UNLOCK", "Sending unlock command");
 
     if (sendPortCommand(port, 'U', nullptr, 3 * SEC_TO_MS_MULTIPLIER) ==
-        ERROR_OK)
-    {
+        ERROR_OK) {
       state->send_unlock_flag = false;
       state->check_unlock_status = true;
-    }
-    else
-    {
+    } else {
       handleCommandError(port, "UNLOCK", -1);
     }
   }
 }
 
-void PortFlagHandler::handleChargeCommand(int port)
-{
+void PortFlagHandler::handleChargeCommand(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->send_charge_flag)
-  {
+  if (!state || !state->send_charge_flag) {
     return;
   }
 
@@ -137,107 +172,82 @@ void PortFlagHandler::handleChargeCommand(int port)
   char variantStr[2] = {state->charge_varient, '\0'};
 
   if (sendPortCommand(port, 'C', variantStr, 10 * SEC_TO_MS_MULTIPLIER) ==
-      ERROR_OK)
-  {
+      ERROR_OK) {
     markPortsUnpolled();
     state->send_charge_flag = false;
     state->check_charge_status = true;
-  }
-  else
-  {
+  } else {
     handleCommandError(port, "CHARGE", -1);
   }
 }
 
-void PortFlagHandler::handleHeartbeat(int port)
-{
+void PortFlagHandler::handleHeartbeat(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->send_port_heartbeat)
-  {
+  if (!state || !state->send_port_heartbeat) {
     return;
   }
 
   logFlagActivity(port, "HEARTBEAT", "Sending heartbeat");
 
   if (sendPortCommand(port, 'H', nullptr, 5 * SEC_TO_MS_MULTIPLIER) ==
-      ERROR_OK)
-  {
+      ERROR_OK) {
     state->send_port_heartbeat = false;
     state->check_heartbeat_status = true;
-  }
-  else
-  {
+  } else {
     handleCommandError(port, "HEARTBEAT", -1);
   }
 }
 
-void PortFlagHandler::handleTemperatureRequest(int port)
-{
+void PortFlagHandler::handleTemperatureRequest(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->send_temp_req_flag)
-  {
+  if (!state || !state->send_temp_req_flag) {
     return;
   }
 
   logFlagActivity(port, "TEMPERATURE", "Requesting temperature data");
 
-  if (sendPortCommand(port, 'T', "0", 10 * SEC_TO_MS_MULTIPLIER) == ERROR_OK)
-  {
+  if (sendPortCommand(port, 'T', "0", 10 * SEC_TO_MS_MULTIPLIER) == ERROR_OK) {
     state->send_temp_req_flag = false;
-  }
-  else
-  {
+  } else {
     handleCommandError(port, "TEMPERATURE", -1);
   }
 }
 
-void PortFlagHandler::handleChargingParameters(int port)
-{
+void PortFlagHandler::handleChargingParameters(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->send_charging_params_flag)
-  {
+  if (!state || !state->send_charging_params_flag) {
     return;
   }
 
   logFlagActivity(port, "CHARGE_PARAMS", "Sending charging parameters");
 
-  if (sendChargingParams(port, state->volts, state->amps, 1) == ERROR_OK)
-  {
+  if (sendChargingParams(port, state->volts, state->amps, 1) == ERROR_OK) {
     state->send_charging_params_flag = false;
-  }
-  else
-  {
+  } else {
     handleCommandError(port, "CHARGE_PARAMS", -1);
     Serial.println("Failed to send port params!");
   }
 }
 
-void PortFlagHandler::handlePortVersionRequest(int port)
-{
+void PortFlagHandler::handlePortVersionRequest(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->send_port_build_version_flag)
-  {
+  if (!state || !state->send_port_build_version_flag) {
     return;
   }
 
   logFlagActivity(port, "VERSION", "Requesting port version");
 
   if (sendPortCommand(port, 'V', nullptr, 10 * SEC_TO_MS_MULTIPLIER) ==
-      ERROR_OK)
-  {
+      ERROR_OK) {
     state->send_port_build_version_flag = false;
-  }
-  else
-  {
+  } else {
     handleCommandError(port, "VERSION", -1);
   }
 }
 
-void PortFlagHandler::handleEmergencyExit(int port)
-{
+void PortFlagHandler::handleEmergencyExit(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->emergency_exit_flag)
-  {
+  if (!state || !state->emergency_exit_flag) {
     return;
   }
 
@@ -247,18 +257,15 @@ void PortFlagHandler::handleEmergencyExit(int port)
   state->send_unlock_flag = true;
 }
 
-void PortFlagHandler::handleVINToCloud(int port)
-{
+void PortFlagHandler::handleVINToCloud(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->send_vin_to_cloud_flag)
-  {
+  if (!state || !state->send_vin_to_cloud_flag) {
     return;
   }
 
   logFlagActivity(port, "VIN_TO_CLOUD", "Sending VIN to cloud");
 
-  if (strlen(state->VIN) > 0)
-  {
+  if (strlen(state->VIN) > 0) {
     char buffer[64];
     snprintf(buffer, sizeof(buffer), "C,2,%d,%s", port, state->VIN);
     publishToCloud(buffer);
@@ -273,11 +280,9 @@ void PortFlagHandler::handleVINToCloud(int port)
   }
 }
 
-void PortFlagHandler::handleButtonState(int port)
-{
+void PortFlagHandler::handleButtonState(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->send_button_state_flag)
-  {
+  if (!state || !state->send_button_state_flag) {
     return;
   }
 
@@ -290,72 +295,55 @@ void PortFlagHandler::handleButtonState(int port)
   state->send_button_state_flag = false;
 }
 
-void PortFlagHandler::checkCommandTimeouts(int port)
-{
+void PortFlagHandler::checkCommandTimeouts(int port) {
   PortState *state = getPortState(port);
-  if (!state)
-  {
+  if (!state) {
     return;
   }
 
   // Check if timeout has expired (compare with current time)
-  if (state->command_timeout > 0)
-  {
+  if (state->command_timeout > 0) {
     unsigned long currentTime = millis();
-    if (currentTime >= state->command_timeout)
-    {
+    if (currentTime >= state->command_timeout) {
       // Timeout expired
       state->command_timeout = 0;
     }
   }
 }
 
-void PortFlagHandler::checkUnlockStatus(int port)
-{
+void PortFlagHandler::checkUnlockStatus(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->check_unlock_status)
-  {
+  if (!state || !state->check_unlock_status) {
     return;
   }
 
-  if (state->unlock_successful)
-  {
+  if (state->unlock_successful) {
     handleUnlockSuccess(port);
-  }
-  else if (state->command_timeout <= 0)
-  {
+  } else if (state->command_timeout <= 0) {
     handleUnlockFailure(port);
   }
 }
 
-void PortFlagHandler::checkChargeStatus(int port)
-{
+void PortFlagHandler::checkChargeStatus(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->check_charge_status)
-  {
+  if (!state || !state->check_charge_status) {
     return;
   }
 
-  if (state->charge_successful)
-  {
+  if (state->charge_successful) {
     handleChargeSuccess(port);
-  }
-  else if (state->command_timeout <= 0)
-  {
+  } else if (state->command_timeout <= 0) {
     handleChargeFailure(port);
   }
 }
 
-void PortFlagHandler::checkHeartbeatStatus(int port)
-{
+void PortFlagHandler::checkHeartbeatStatus(int port) {
   PortState *state = getPortState(port);
-  if (!state || !state->check_heartbeat_status)
-  {
+  if (!state || !state->check_heartbeat_status) {
     return;
   }
 
-  if (state->heartbeat_success)
-  {
+  if (state->heartbeat_success) {
     logFlagActivity(port, "HEARTBEAT", "Success");
 
     // Publish heartbeat success to cloud: H,0,port,1
@@ -365,9 +353,7 @@ void PortFlagHandler::checkHeartbeatStatus(int port)
 
     state->check_heartbeat_status = false;
     state->heartbeat_success = false;
-  }
-  else if (state->command_timeout <= 0)
-  {
+  } else if (state->command_timeout <= 0) {
     logFlagActivity(port, "HEARTBEAT", "Timeout");
 
     // Publish heartbeat failure to cloud: H,0,port,0
@@ -379,8 +365,7 @@ void PortFlagHandler::checkHeartbeatStatus(int port)
   }
 }
 
-void PortFlagHandler::handleUnlockSuccess(int port)
-{
+void PortFlagHandler::handleUnlockSuccess(int port) {
   logFlagActivity(port, "UNLOCK", "Success");
 
   char buffer[16];
@@ -389,19 +374,16 @@ void PortFlagHandler::handleUnlockSuccess(int port)
 
   // Reset retry count on success
   PortState *state = getPortState(port);
-  if (state)
-  {
+  if (state) {
     state->unlock_retry_count = 0;
   }
 
   resetPortAfterOperation(port);
 }
 
-void PortFlagHandler::handleUnlockFailure(int port)
-{
+void PortFlagHandler::handleUnlockFailure(int port) {
   PortState *state = getPortState(port);
-  if (!state)
-  {
+  if (!state) {
     return;
   }
 
@@ -409,8 +391,7 @@ void PortFlagHandler::handleUnlockFailure(int port)
   state->unlock_retry_count++;
 
   // Check if we should retry
-  if (state->unlock_retry_count < MAX_UNLOCK_RETRY)
-  {
+  if (state->unlock_retry_count < MAX_UNLOCK_RETRY) {
     char retryMessage[64];
     snprintf(retryMessage, sizeof(retryMessage),
              "Failed - timeout, retry %d/%d", state->unlock_retry_count,
@@ -440,13 +421,11 @@ void PortFlagHandler::handleUnlockFailure(int port)
   state->DID_PORT_CHECK = false;
 }
 
-void PortFlagHandler::handleChargeSuccess(int port)
-{
+void PortFlagHandler::handleChargeSuccess(int port) {
   logFlagActivity(port, "CHARGE", "Success");
 
   PortState *state = getPortState(port);
-  if (state)
-  {
+  if (state) {
     // Publish charge success to cloud: C,variant,port,1
     char buffer[16];
     char variantStr[2] = {state->charge_varient, '\0'};
@@ -460,13 +439,11 @@ void PortFlagHandler::handleChargeSuccess(int port)
   }
 }
 
-void PortFlagHandler::handleChargeFailure(int port)
-{
+void PortFlagHandler::handleChargeFailure(int port) {
   logFlagActivity(port, "CHARGE", "Failed - timeout");
 
   PortState *state = getPortState(port);
-  if (state)
-  {
+  if (state) {
     // Publish charge failure to cloud: C,variant,port,0
     char buffer[16];
     char variantStr[2] = {state->charge_varient, '\0'};
@@ -481,10 +458,8 @@ void PortFlagHandler::handleChargeFailure(int port)
 }
 
 int PortFlagHandler::sendPortCommand(int port, char command,
-                                     const char *variant, int timeout)
-{
-  if (!isValidPort(port))
-  {
+                                     const char *variant, int timeout) {
+  if (!isValidPort(port)) {
     return -1;
   }
 
@@ -492,10 +467,8 @@ int PortFlagHandler::sendPortCommand(int port, char command,
 }
 
 int PortFlagHandler::sendChargingParams(int port, const char *volts,
-                                        const char *amps, int timeout)
-{
-  if (!isValidPort(port))
-  {
+                                        const char *amps, int timeout) {
+  if (!isValidPort(port)) {
     return -1;
   }
 
@@ -504,24 +477,18 @@ int PortFlagHandler::sendChargingParams(int port, const char *volts,
                          const_cast<char *>(amps), timeout);
 }
 
-void PortFlagHandler::publishToCloud(const char *message)
-{
-  if (isMQTTConnected())
-  {
+void PortFlagHandler::publishToCloud(const char *message) {
+  if (isMQTTConnected()) {
     publishCloud(String(message));
-  }
-  else
-  {
+  } else {
     // Fallback to Particle cloud
     Particle.publish("port_status", message, PRIVATE);
   }
 }
 
-void PortFlagHandler::resetPortAfterOperation(int port)
-{
+void PortFlagHandler::resetPortAfterOperation(int port) {
   PortState *state = getPortState(port);
-  if (state)
-  {
+  if (state) {
     state->check_unlock_status = false;
     state->emergency_exit_flag = false;
     state->unlock_successful = false;
@@ -544,26 +511,21 @@ void PortFlagHandler::resetPortAfterOperation(int port)
 }
 
 void PortFlagHandler::logFlagActivity(int port, const char *flagName,
-                                      const char *action)
-{
+                                      const char *action) {
   Serial.printlnf("Port %d - %s: %s", port, flagName, action);
 }
 
-int PortFlagHandler::getNextPort()
-{
+int PortFlagHandler::getNextPort() {
   currentPort++;
-  if (currentPort > MAX_PORTS)
-  {
+  if (currentPort > MAX_PORTS) {
     currentPort = 1;
   }
   return currentPort;
 }
 
-bool PortFlagHandler::hasPortPendingFlags(int port)
-{
+bool PortFlagHandler::hasPortPendingFlags(int port) {
   PortState *state = getPortState(port);
-  if (!state)
-  {
+  if (!state) {
     return false;
   }
 
@@ -576,35 +538,29 @@ bool PortFlagHandler::hasPortPendingFlags(int port)
           state->check_heartbeat_status);
 }
 
-int PortFlagHandler::getPendingPortsCount()
-{
+int PortFlagHandler::getPendingPortsCount() {
   int count = 0;
-  for (int port = 1; port <= MAX_PORTS; port++)
-  {
-    if (hasPortPendingFlags(port))
-    {
+  for (int port = 1; port <= MAX_PORTS; port++) {
+    if (hasPortPendingFlags(port)) {
       count++;
     }
   }
   return count;
 }
 
-bool PortFlagHandler::isValidPort(int port)
-{
+bool PortFlagHandler::isValidPort(int port) {
   return (port >= 1 && port <= MAX_PORTS);
 }
 
 void PortFlagHandler::formatCloudMessage(const char *command,
                                          const char *variant, int port,
                                          const char *success, char *buffer,
-                                         size_t bufferSize)
-{
+                                         size_t bufferSize) {
   snprintf(buffer, bufferSize, "%s,%s,%d,%s", command, variant, port, success);
 }
 
 void PortFlagHandler::handleCommandError(int port, const char *command,
-                                         int errorCode)
-{
+                                         int errorCode) {
   Serial.printlnf("CAN ERROR on port %d for command %s (error: %d)", port,
                   command, errorCode);
 
@@ -615,50 +571,119 @@ void PortFlagHandler::handleCommandError(int port, const char *command,
 }
 
 bool PortFlagHandler::canRetryCommand(unsigned long lastAttemptTime,
-                                      unsigned long retryInterval)
-{
+                                      unsigned long retryInterval) {
   return (millis() - lastAttemptTime) >= retryInterval;
 }
 
-void PortFlagHandler::updateCommandTimeout(int port, int decrement)
-{
+void PortFlagHandler::updateCommandTimeout(int port, int decrement) {
   // This function is no longer needed since we use absolute timestamps
   // Keeping for compatibility but making it a no-op
 }
 
-void PortFlagHandler::checkVINTimeout(int port, PortState *state)
-{
-  const unsigned long VIN_TIMEOUT = 30000; // 30 seconds
+void PortFlagHandler::checkVINTimeout(int port, PortState *state) {
+  // Different timeouts based on retry mode
+  const unsigned long PARTIAL_VIN_TIMEOUT = 30000; // 30 seconds for partial VIN
+  const unsigned long FAST_RETRY_TIMEOUT =
+      45000; // 45 seconds for first 3 attempts
+  const unsigned long PERSISTENT_RETRY_TIMEOUT =
+      60000; // 60 seconds for persistent mode
 
-  // Only check if we have a partial VIN
-  if (strlen(state->VIN) > 0 && strlen(state->VIN) < VIN_LENGTH)
-  {
+  // Check for both partial VIN and complete request timeout
+  if (state->vin_request_flag && state->send_vin_request_timer > 0) {
+    unsigned long timeSinceLastRequest =
+        millis() - state->send_vin_request_timer;
+
+    // Handle partial VIN timeout (we got some data but not complete)
+    if (strlen(state->VIN) > 0 && strlen(state->VIN) < VIN_LENGTH &&
+        timeSinceLastRequest > PARTIAL_VIN_TIMEOUT) {
+      Serial.printlnf(
+          "Port %d - Partial VIN timeout after %lu ms, clearing and retrying",
+          port, timeSinceLastRequest);
+
+      // Clear partial VIN and allow retry
+      memset(state->VIN, 0, sizeof(state->VIN));
+      state->send_vin_request_timer = 0; // Allow immediate retry
+
+      Serial.printlnf("Port %d - VIN timeout recovery: will retry request",
+                      port);
+    }
+    // Handle complete request timeout (no response at all)
+    else if (strlen(state->VIN) == 0) {
+      unsigned long timeout = (state->vin_request_retry_count < 3)
+                                  ? FAST_RETRY_TIMEOUT
+                                  : PERSISTENT_RETRY_TIMEOUT;
+
+      if (timeSinceLastRequest > timeout) {
+        Serial.printlnf(
+            "Port %d - VIN request timeout after %lu ms (retry %d), will retry",
+            port, timeSinceLastRequest, state->vin_request_retry_count);
+
+        // Reset timer to allow retry - NEVER give up
+        state->send_vin_request_timer = 0;
+      }
+    }
+  }
+
+  // Also check for abandoned VIN requests (flag cleared but partial VIN
+  // remains)
+  if (!state->vin_request_flag && strlen(state->VIN) > 0 &&
+      strlen(state->VIN) < VIN_LENGTH) {
     unsigned long timeSinceLastUpdate =
         millis() - state->send_vin_request_timer;
-    if (timeSinceLastUpdate > VIN_TIMEOUT)
+    if (timeSinceLastUpdate > 60000) // 1 minute for abandoned partial VINs
     {
-      Serial.printlnf("Port %d - Partial VIN timeout after %lu ms, clearing "
-                      "and restarting",
-                      port, timeSinceLastUpdate);
-
-      // Clear partial VIN and restart the process
-      memset(state->VIN, 0, sizeof(state->VIN));
-      state->vin_request_flag = true;
-      state->send_vin_request_timer = millis();
-
-      Serial.printlnf("Port %d - VIN timeout recovery: requesting new VIN",
+      Serial.printlnf("Port %d - Abandoned partial VIN detected, clearing",
                       port);
+      memset(state->VIN, 0, sizeof(state->VIN));
+      state->vin_request_retry_count = 0;
+      state->send_vin_request_timer = 0;
     }
   }
 }
 
-int PortFlagHandler::portWriteParams(int port, char volts[], char amps[], int timeout)
-{
+void PortFlagHandler::checkVINCompletion(int port, PortState *state) {
+  if (!state) {
+    return;
+  }
+
+  // If we have a VIN request flag active and received a complete VIN, clear the
+  // flag
+  if (state->vin_request_flag && strlen(state->VIN) >= VIN_LENGTH) {
+    Serial.printlnf("Port %d - SUCCESS: Complete VIN received after %d "
+                    "attempts, clearing request flag",
+                    port, state->vin_request_retry_count);
+    state->vin_request_flag = false;
+    state->vin_request_retry_count = 0;
+    state->send_vin_request_timer = 0;
+  }
+
+  // Also handle case where VIN was cleared externally but flag is still set
+  else if (state->vin_request_flag && strlen(state->VIN) == 0 &&
+           state->send_vin_request_timer > 0) {
+    unsigned long timeSinceRequest = millis() - state->send_vin_request_timer;
+
+    // If no VIN data received after reasonable time, allow retry logic to take
+    // over
+    if (timeSinceRequest > 10000) { // 10 seconds with no response at all
+      if (state->vin_request_retry_count >= 3) {
+        Serial.printlnf("Port %d - PERSISTENT: No VIN response after %lu ms, "
+                        "attempt %d (never giving up)",
+                        port, timeSinceRequest, state->vin_request_retry_count);
+      } else {
+        Serial.printlnf("Port %d - No VIN response after %lu ms, retry logic "
+                        "will handle (attempt %d/3)",
+                        port, timeSinceRequest, state->vin_request_retry_count);
+      }
+    }
+  }
+}
+
+int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
+                                     int timeout) {
   Serial.printf("Sending charge params - volts: %s, amps: %s\n", volts, amps);
 
   struct PortState *portState = getPortState(port);
-  if (!portState)
-  {
+  if (!portState) {
     return -1;
   }
   // Set absolute timeout timestamp (current time + timeout duration)
@@ -674,37 +699,31 @@ int PortFlagHandler::portWriteParams(int port, char volts[], char amps[], int ti
   reqMsg.data[reqMsg.can_dlc++] = ',';
 
   // Add volts
-  for (int i = 0; i < strlen(volts) && reqMsg.can_dlc < 8; i++)
-  {
+  for (int i = 0; i < strlen(volts) && reqMsg.can_dlc < 8; i++) {
     reqMsg.data[reqMsg.can_dlc++] = volts[i];
   }
 
   reqMsg.data[reqMsg.can_dlc++] = ',';
 
   // Add amps
-  for (int i = 0; i < strlen(amps) && reqMsg.can_dlc < 8; i++)
-  {
+  for (int i = 0; i < strlen(amps) && reqMsg.can_dlc < 8; i++) {
     reqMsg.data[reqMsg.can_dlc++] = amps[i];
   }
 
   int result = sendCanMessage(reqMsg);
-  if (result != ERROR_OK)
-  {
+  if (result != ERROR_OK) {
     Serial.printlnf("CAN Error in portWriteParams: %d", result);
   }
   return result;
 }
 
-int PortFlagHandler::portWrite(int port, char cmd, char *variant,
-                               int timeout)
-{
+int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout) {
   struct PortState *portState = getPortState(port);
 
   Serial.printlnf("portWriteNew: port=%d, cmd=%c", port, cmd);
 
   struct can_frame reqMsg;
-  if (port < 1 || port > MAX_PORTS)
-  {
+  if (port < 1 || port > MAX_PORTS) {
     Serial.printf("portWrite Invalid port number: %d\n", port);
     return -1; // Return negative value to indicate error
   }
@@ -728,35 +747,29 @@ int PortFlagHandler::portWrite(int port, char cmd, char *variant,
 
   // Copy port number string into message (with bounds checking)
   size_t maxPortDigits = 2; // Maximum digits in port number
-  for (size_t i = 0; i < portStrLen && i < maxPortDigits; i++)
-  {
+  for (size_t i = 0; i < portStrLen && i < maxPortDigits; i++) {
     reqMsg.data[2 + i] = portStr[i];
   }
 
-  if (variant != NULL)
-  {
+  if (variant != NULL) {
     // Add comma separator after port number
     reqMsg.data[2 + portStrLen] = ',';
 
     // Calculate max safe length for variant
-    size_t maxVariantLen = sizeof(reqMsg.data) - (3 + portStrLen) -
-                           1; // -1 for null terminator
+    size_t maxVariantLen =
+        sizeof(reqMsg.data) - (3 + portStrLen) - 1; // -1 for null terminator
 
     // Use our safe string copy function
-    safeStrCopy((char *)&reqMsg.data[3 + portStrLen], variant,
-                maxVariantLen);
+    safeStrCopy((char *)&reqMsg.data[3 + portStrLen], variant, maxVariantLen);
 
     // Ensure null-termination of CAN message
     reqMsg.data[7] = '\0';
 
     // Set the CAN message length to 8
     reqMsg.can_dlc = 8;
-  }
-  else
-  {
+  } else {
     // Null-pad the remaining bytes starting after port number
-    for (size_t i = 2 + portStrLen; i < 8; i++)
-    {
+    for (size_t i = 2 + portStrLen; i < 8; i++) {
       reqMsg.data[i] = '\0';
     }
     Serial.print("Sending to port: ");
@@ -771,24 +784,19 @@ int PortFlagHandler::portWrite(int port, char cmd, char *variant,
   int result = sendCanMessage(reqMsg);
 
   // Check for send errors
-  if (result != ERROR_OK)
-  {
-    Serial.printlnf("CAN send error: %d when sending to port %d", result,
-                    port);
+  if (result != ERROR_OK) {
+    Serial.printlnf("CAN send error: %d when sending to port %d", result, port);
   }
 
   return result;
 }
 
-bool PortFlagHandler::sendGetPortData(int addr)
-{
-  if (addr == 0)
-  { // Address 0 is reserved for the IoT device itself
+bool PortFlagHandler::sendGetPortData(int addr) {
+  if (addr == 0) { // Address 0 is reserved for the IoT device itself
     return true;
   }
 
-  if (!isValidPort(addr))
-  {
+  if (!isValidPort(addr)) {
     Serial.printlnf("Invalid port number for data request: %d", addr);
     return false;
   }
@@ -810,8 +818,7 @@ bool PortFlagHandler::sendGetPortData(int addr)
   size_t portStrLen = strlen(portStr);
 
   // Copy port number string into message
-  for (size_t i = 0; i < portStrLen; i++)
-  {
+  for (size_t i = 0; i < portStrLen; i++) {
     reqMsg.data[2 + i] = portStr[i];
   }
 
@@ -819,8 +826,7 @@ bool PortFlagHandler::sendGetPortData(int addr)
   reqMsg.data[2 + portStrLen] = '\0';
 
   // Pad remaining bytes with null terminators
-  for (size_t i = 2 + portStrLen + 1; i < 8; i++)
-  {
+  for (size_t i = 2 + portStrLen + 1; i < 8; i++) {
     reqMsg.data[i] = '\0';
   }
 
@@ -828,12 +834,11 @@ bool PortFlagHandler::sendGetPortData(int addr)
   reqMsg.can_dlc = 8;
 
   int result = sendCanMessage(reqMsg);
-  if (result != ERROR_OK)
-  {
+  if (result != ERROR_OK) {
     char error_buff[20];
     ReturnErrorString(result, error_buff, 20);
-    Serial.printlnf("Failed to send data request to port %d, error: %s",
-                    addr, error_buff);
+    Serial.printlnf("Failed to send data request to port %d, error: %s", addr,
+                    error_buff);
     return false;
   }
 

@@ -248,6 +248,13 @@ private:
   void checkVINTimeout(int port, PortState *state);
 
   /**
+   * Check if VIN request is complete and clear flags
+   * @param port Port number
+   * @param state Port state pointer
+   */
+  void checkVINCompletion(int port, PortState *state);
+
+  /**
    * Check if a command can be retried based on timing
    * @param lastAttemptTime Last attempt timestamp
    * @param retryInterval Retry interval in milliseconds
