@@ -12,6 +12,9 @@ PortFlagHandler::PortFlagHandler(PortStateManager *manager)
 
 void PortFlagHandler::processAllPortFlags()
 {
+  static unsigned long lastVINScanTime = 0;
+  unsigned long currentTime = millis();
+  
   // Process flags for all ports in round-robin fashion
   for (int i = 0; i < MAX_PORTS; i++)
   {
@@ -20,6 +23,34 @@ void PortFlagHandler::processAllPortFlags()
     {
       processPortFlags(port);
     }
+  }
+  
+  // Every 30 seconds, do a scan specifically for stuck VIN requests
+  // This helps unblock VIN requests that might be waiting too long
+  if (currentTime - lastVINScanTime > 30000)
+  {
+    int stuckVINs = 0;
+    for (int p = 1; p <= MAX_PORTS; p++)
+    {
+      PortState *state = getPortState(p);
+      if (state && state->vin_request_flag)
+      {
+        unsigned long waitTime = currentTime - state->send_vin_request_timer;
+        if (waitTime > 90000) { // If waiting over 90 seconds
+          Serial.printlnf("Found stuck VIN request on port %d (waiting %lu seconds)",
+                       p, waitTime/1000);
+          stuckVINs++;
+          // Process this port's flags specifically
+          processPortFlags(p);
+        }
+      }
+    }
+    
+    if (stuckVINs > 0) {
+      Serial.printlnf("VIN scan complete: found and processed %d stuck VIN requests", stuckVINs);
+    }
+    
+    lastVINScanTime = currentTime;
   }
 }
 
@@ -70,6 +101,15 @@ void PortFlagHandler::handleVINRequest(int port)
     return;
   }
 
+  // Check if this VIN request has been waiting for too long
+  unsigned long currentTime = millis();
+  unsigned long waitTime = currentTime - state->send_vin_request_timer;
+  
+  if (waitTime > 60000) { // If waiting over 60 seconds
+    Serial.printlnf("WARNING: Processing long-waiting VIN request for port %d (waited %lu seconds)",
+                    port, waitTime/1000);
+  }
+
   logFlagActivity(port, "VIN_REQUEST", "Sending VIN request");
 
   if (sendPortCommand(port, 'K', nullptr, 10 * SEC_TO_MS_MULTIPLIER) ==
@@ -77,10 +117,13 @@ void PortFlagHandler::handleVINRequest(int port)
   {
     state->vin_request_flag = false;
     state->send_vin_request_timer = millis();
+    Serial.printlnf("VIN request command sent successfully to port %d", port);
   }
   else
   {
     handleCommandError(port, "VIN_REQUEST", -1);
+    // Don't clear the flag on error, so we'll try again
+    Serial.printlnf("VIN request failed for port %d, will retry later", port);
   }
 }
 
@@ -628,14 +671,16 @@ void PortFlagHandler::updateCommandTimeout(int port, int decrement)
 
 void PortFlagHandler::checkVINTimeout(int port, PortState *state)
 {
-  const unsigned long VIN_TIMEOUT = 30000; // 30 seconds
+  const unsigned long PARTIAL_VIN_TIMEOUT = 30000; // 30 seconds for partial VINs
+  const unsigned long VIN_REQUEST_TIMEOUT = 60000; // 60 seconds for pending requests
+  const unsigned long currentTime = millis();
 
-  // Only check if we have a partial VIN
+  // Case 1: Check for partial VIN timeout (VIN started but not completed)
   if (strlen(state->VIN) > 0 && strlen(state->VIN) < VIN_LENGTH)
   {
     unsigned long timeSinceLastUpdate =
-        millis() - state->send_vin_request_timer;
-    if (timeSinceLastUpdate > VIN_TIMEOUT)
+        currentTime - state->send_vin_request_timer;
+    if (timeSinceLastUpdate > PARTIAL_VIN_TIMEOUT)
     {
       Serial.printlnf("Port %d - Partial VIN timeout after %lu ms, clearing "
                       "and restarting",
@@ -644,10 +689,25 @@ void PortFlagHandler::checkVINTimeout(int port, PortState *state)
       // Clear partial VIN and restart the process
       memset(state->VIN, 0, sizeof(state->VIN));
       state->vin_request_flag = true;
-      state->send_vin_request_timer = millis();
+      state->send_vin_request_timer = currentTime;
 
       Serial.printlnf("Port %d - VIN timeout recovery: requesting new VIN",
                       port);
+    }
+  }
+  
+  // Case 2: Check for VIN request flag set but no response at all
+  else if (state->vin_request_flag && strlen(state->VIN) == 0)
+  {
+    unsigned long timeSinceRequest = 
+        currentTime - state->send_vin_request_timer;
+    if (timeSinceRequest > VIN_REQUEST_TIMEOUT)
+    {
+      Serial.printlnf("Port %d - VIN request stuck for %lu ms, refreshing request",
+                     port, timeSinceRequest);
+                     
+      // Reset the timer but keep the flag set
+      state->send_vin_request_timer = currentTime;
     }
   }
 }
