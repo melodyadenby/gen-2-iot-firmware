@@ -321,10 +321,8 @@ void handleSystemLoop() {
     setLightRed();
     return;
   }
-  // Handle port data requests (staggered polling)
-  handlePortDataRequests();
 
-  // Handle MQTT and credentials
+  // Handle MQTT and credentials first
   handleMQTT();
   handleCredentials();
   updateSystemStatus();
