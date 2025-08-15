@@ -267,6 +267,8 @@ void initializeHardware() {
 void initializeParticle() {
   // Register cloud functions
   Particle.function("resetDevice", resetDevice);
+  Particle.function("getPortVin", forceGetVin);
+  Particle.function("getPortStatus", forceGetPortStatus);
 
   // Connect to Particle Cloud
   Particle.connect();
@@ -1152,16 +1154,46 @@ int resetDevice(String command) {
     Serial.printlnf("Credentials valid: %s",
                     areCredentialsValid() ? "yes" : "no");
     Serial.printlnf("CAN errors in last period: %d", can_error_count);
-
-    if (isMQTTConnected()) {
-      Serial.printlnf("Closing MQTT connection...");
-    }
-
-    delay(1000);
   }
-
+  // if (isMQTTConnected()) {
+  //   Serial.printlnf("Closing MQTT connection...");
+  //   //disconnectMQTT();
+  // }
   System.reset();
   return 1;
+}
+int forceGetVin(String command) {
+  int port = atoi(command.c_str());
+  if (!isValidPort(port)) {
+    Particle.publish("forceGetVin", "error: invalid port", PRIVATE);
+    return -1;
+  }
+  PortState *state = getPortState(port);
+  if (!state) {
+    Particle.publish("forceGetVin", "error: no state", PRIVATE);
+    return -2;
+  }
+
+  if (strlen(state->VIN) > 0) {
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "Port %d VIN: %s", port, state->VIN);
+    Particle.publish("forceGetVin", buffer, PRIVATE);
+    return 1; // Success
+  } else {
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Port %d: no VIN", port);
+    Particle.publish("forceGetVin", buffer, PRIVATE);
+    return 0; // No VIN
+  }
+}
+int forceGetPortStatus(String command) {
+  int port = atoi(command.c_str());
+
+  String portStatus = getPortStatusSummary(port);
+  // char buffer[100];
+  // snprintf(buffer, sizeof(buffer), portStatus.c_str());
+  Particle.publish("forceGetPortStatus", portStatus, PRIVATE);
+  return 1; // Success
 }
 
 void logDebugInfo(const char *checkpoint) {
@@ -1261,9 +1293,9 @@ void canHealthMonitorThread() {
 
       // Check if error rate is too high
       if (can_error_count > MAX_CAN_ERRORS_PER_MINUTE) {
-        Serial.printlnf(
-            "CAN error rate too high (%d errors/minute), triggering recovery",
-            can_error_count);
+        Serial.printlnf("CAN error rate too high (%d errors/minute), "
+                        "triggering recovery",
+                        can_error_count);
         can_recovery_needed = true;
       }
 
@@ -1288,8 +1320,8 @@ void canHealthMonitorThread() {
       // errors
       if (currentTime - canErrorMonitor.lastErrorTime > CAN_ERROR_WINDOW) {
         if (canErrorMonitor.consecutiveErrors > 0) {
-          Serial.printlnf(
-              "CAN Error Window Expired - Resetting consecutive error count");
+          Serial.printlnf("CAN Error Window Expired - Resetting "
+                          "consecutive error count");
           canErrorMonitor.consecutiveErrors = 0;
         }
       }
@@ -1387,8 +1419,8 @@ void canHealthMonitorThread() {
 
       // // Log CAN error flags if any are detected (less frequent)
       // static unsigned long lastFlagLog = 0;
-      // if (currentFlags != 0 && currentTime - lastFlagLog > 30000) // Every
-      // 30 seconds
+      // if (currentFlags != 0 && currentTime - lastFlagLog > 30000) //
+      // Every 30 seconds
       // {
       //   Serial.printlnf("MCP2515 hardware error flags detected: 0x%02X",
       //   currentFlags); getCANErrorFlags(true); // Debug output with
@@ -1449,8 +1481,8 @@ void checkInterruptHealth() {
         PORT_CHECK_INTERVAL * 4; // 40s grace period after port polling starts
   }
 
-  // If we haven't received message processing in a while, but CAN is supposed
-  // to be working
+  // If we haven't received message processing in a while, but CAN is
+  // supposed to be working
   if (timeSinceLastInterrupt > dynamicTimeout && !CAN_ERROR &&
       !can_recovery_needed) {
     // Check MCP2515 error flags first to see if it's just buffer overflow
@@ -1552,7 +1584,8 @@ void checkTransmissionReceptionBalance() {
   unsigned long timeSinceLastRX = currentTime - lastInterruptTime;
 
   // Calculate dynamic TX/RX timeout based on polling patterns
-  // After port polling cycle starts, give extra time for all ports to respond
+  // After port polling cycle starts, give extra time for all ports to
+  // respond
   unsigned long dynamicTxRxTimeout = TX_RX_IMBALANCE_TIMEOUT;
   unsigned long timeSincePortReset = currentTime - last_port_check_reset;
   if (timeSincePortReset < PORT_CHECK_INTERVAL * 2) {
