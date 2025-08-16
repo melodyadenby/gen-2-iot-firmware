@@ -203,11 +203,15 @@ String getPortStatusSummary(int portNumber) {
   }
 
   String status = "Port " + String(portNumber) + ": ";
+
+  status += port->fatal_NFC_error ? "Fatal NFC Error, " : "NFC Healthy, ";
+
   status += port->docked ? "Docked" : "Empty";
 
   if (port->docked) {
     status += port->charging ? ", Charging" : ", Not Charging";
     status += port->vehicle_secured ? ", Secured" : ", Unsecured";
+    status += port->valid_vehicle_tag ? ", Tag Valid" : ", Tag Invalid";
 
     if (strlen(port->VIN) > 0) {
       status += ", VIN: " + String(port->VIN);

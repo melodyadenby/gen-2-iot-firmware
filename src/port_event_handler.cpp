@@ -80,6 +80,141 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     markPortPolled(port);
   }
 
+  // SECURITY CHECK: Detect unauthorized charging with grace period for
+  // authentication
+  if (message.status.docked && message.status.charging &&
+      !message.status.vehicleSecured) {
+    // Vehicle is charging but not secured - this is always a violation
+    Serial.printlnf("SECURITY VIOLATION: Port %d - Vehicle charging without "
+                    "security verification!",
+                    port);
+    Serial.printlnf(
+        "Port %d - Docked: %s, Charging: %s, Secured: %s, VIN: '%s'", port,
+        message.status.docked ? "YES" : "NO",
+        message.status.charging ? "YES" : "NO",
+        message.status.vehicleSecured ? "YES" : "NO", state->VIN);
+
+    // Immediately trigger emergency exit
+    state->emergency_exit_flag = true;
+
+    // Notify cloud of security violation
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "SECURITY_VIOLATION,%d,CHARGING_UNSECURED",
+             port);
+    publishStatusToCloud(port, buffer);
+
+    Serial.printlnf("Port %d - Emergency exit triggered for unsecured charging",
+                    port);
+    return; // Skip further processing for this compromised port
+  }
+
+  // SECURITY CHECK: Detect charging with incomplete VIN after grace period
+  if (message.status.docked && message.status.charging &&
+      message.status.vehicleSecured && strlen(state->VIN) < VIN_LENGTH) {
+
+    // Check if we're in the authentication grace period (30 seconds)
+    const unsigned long VIN_AUTH_GRACE_PERIOD = 30000; // 30 seconds
+    unsigned long timeSinceVINRequest = 0;
+
+    // Initialize timer if not set (e.g., IoT restart with vehicle already
+    // charging)
+    if (state->send_vin_request_timer == 0) {
+      state->send_vin_request_timer = millis();
+      Serial.printlnf("Port %d - Starting grace period timer for charging "
+                      "vehicle without VIN",
+                      port);
+    }
+
+    if (state->send_vin_request_timer > 0) {
+      timeSinceVINRequest = millis() - state->send_vin_request_timer;
+    }
+
+    if (timeSinceVINRequest > VIN_AUTH_GRACE_PERIOD) {
+      Serial.printlnf("SECURITY VIOLATION: Port %d - Charging with incomplete "
+                      "VIN after grace period!",
+                      port);
+      Serial.printlnf("Port %d - VIN length: %d, Grace period expired: %lu ms",
+                      port, strlen(state->VIN), timeSinceVINRequest);
+
+      // Trigger emergency exit after grace period
+      state->emergency_exit_flag = true;
+
+      // Notify cloud of security violation
+      char buffer[64];
+      snprintf(buffer, sizeof(buffer),
+               "SECURITY_VIOLATION,%d,INCOMPLETE_VIN_TIMEOUT", port);
+      publishStatusToCloud(port, buffer);
+
+      Serial.printlnf("Port %d - Emergency exit triggered for VIN timeout",
+                      port);
+      return;
+    } else {
+      // Still within grace period - log but allow continued operation
+      Serial.printlnf("Port %d - Charging with incomplete VIN, within grace "
+                      "period (%lu/%lu ms) - VIN length: %d",
+                      port, timeSinceVINRequest, VIN_AUTH_GRACE_PERIOD,
+                      strlen(state->VIN));
+
+      // Request VIN if we haven't already
+      if (!state->vin_request_flag) {
+        state->vin_request_flag = true;
+        Serial.printlnf("Port %d - Requesting VIN during grace period", port);
+      }
+    }
+  }
+
+  // SECURITY CHECK: Detect trapped vehicles without VIN after grace period
+  // (regardless of charging status)
+  if (message.status.docked && message.status.vehicleSecured &&
+      strlen(state->VIN) < VIN_LENGTH) {
+
+    // Check if we're in the authentication grace period (30 seconds)
+    const unsigned long VIN_AUTH_GRACE_PERIOD = 30000; // 30 seconds
+    unsigned long timeSinceVINRequest = 0;
+
+    // Initialize timer if not set (e.g., IoT restart with vehicle already
+    // docked)
+    if (state->send_vin_request_timer == 0) {
+      state->send_vin_request_timer = millis();
+      Serial.printlnf("Port %d - Starting grace period timer for trapped "
+                      "vehicle without VIN",
+                      port);
+    }
+
+    if (state->send_vin_request_timer > 0) {
+      timeSinceVINRequest = millis() - state->send_vin_request_timer;
+    }
+
+    if (timeSinceVINRequest > VIN_AUTH_GRACE_PERIOD) {
+      Serial.printlnf("SECURITY VIOLATION: Port %d - Vehicle trapped without "
+                      "VIN after grace period!",
+                      port);
+      Serial.printlnf("Port %d - VIN length: %d, Grace period expired: %lu ms",
+                      port, strlen(state->VIN), timeSinceVINRequest);
+
+      // Trigger emergency exit to prevent trapping
+      state->emergency_exit_flag = true;
+
+      // Notify cloud of security violation
+      char buffer[64];
+      snprintf(buffer, sizeof(buffer),
+               "SECURITY_VIOLATION,%d,TRAPPED_VIN_TIMEOUT", port);
+      publishStatusToCloud(port, buffer);
+
+      Serial.printlnf("Port %d - Emergency exit triggered for trapped vehicle",
+                      port);
+      return;
+    } else {
+      // Still within grace period - ensure VIN is being requested
+      if (!state->vin_request_flag) {
+        state->vin_request_flag = true;
+        Serial.printlnf("Port %d - Requesting VIN for trapped vehicle during "
+                        "grace period",
+                        port);
+      }
+    }
+  }
+
   // Clear VIN if vehicle is no longer docked (handles undocking without unlock)
   if (!message.status.docked && strlen(state->VIN) > 0) {
     Serial.printlnf("Port %d - Vehicle undocked, clearing VIN (%s)", port,
@@ -116,14 +251,25 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     Serial.printlnf("Port %d - VIN state cleared, will restart sequence", port);
   }
 
-  // Handle VIN request logic - only start if we don't already have a VIN for
-  // this session
+  // Handle VIN request logic - start VIN sequence for vehicles without VIN
   if (message.status.tagValid && message.status.docked &&
       !state->vin_request_flag && strlen(state->VIN) == 0) {
-    // Only start VIN sequence if we don't already have a VIN
+    // Start VIN sequence if we don't already have a VIN
     state->vin_request_flag = true;
     state->send_vin_request_timer = millis();
     Serial.printlnf("Port %d - Starting new VIN sequence", port);
+  }
+
+  // Special case: Vehicle is secured and charging but we have no VIN (IoT
+  // restart scenario)
+  if (message.status.tagValid && message.status.docked &&
+      message.status.charging && strlen(state->VIN) == 0 &&
+      !state->vin_request_flag) {
+    state->vin_request_flag = true;
+    state->send_vin_request_timer = millis();
+    Serial.printlnf(
+        "Port %d - Emergency VIN request for charging vehicle without VIN",
+        port);
   }
 
   // Handle charging logic
@@ -463,4 +609,96 @@ void PortEventHandler::formatCloudMessage(const char *command,
                                           const char *success, char *buffer,
                                           size_t bufferSize) {
   snprintf(buffer, bufferSize, "%s,%s,%d,%s", command, variant, port, success);
+}
+
+bool PortEventHandler::isChargingAuthorized(int port) {
+  PortState *state = getPortState(port);
+  if (!state) {
+    Serial.printlnf(
+        "Port %d - No state available for charging authorization check", port);
+    return false;
+  }
+
+  // Check if vehicle is properly docked and secured
+  if (!state->docked || !state->vehicle_secured) {
+    Serial.printlnf("Port %d - Charging not authorized: docked=%s, secured=%s",
+                    port, state->docked ? "YES" : "NO",
+                    state->vehicle_secured ? "YES" : "NO");
+    return false;
+  }
+
+  // Check if we have a complete VIN
+  if (strlen(state->VIN) < VIN_LENGTH) {
+    // Check if we're in the authentication grace period (30 seconds)
+    const unsigned long VIN_AUTH_GRACE_PERIOD = 30000; // 30 seconds
+    unsigned long timeSinceVINRequest = 0;
+
+    if (state->send_vin_request_timer > 0) {
+      timeSinceVINRequest = millis() - state->send_vin_request_timer;
+    }
+
+    if (timeSinceVINRequest <= VIN_AUTH_GRACE_PERIOD &&
+        state->send_vin_request_timer > 0) {
+      Serial.printlnf("Port %d - Charging authorized during VIN grace period: "
+                      "VIN length %d, time elapsed %lu ms",
+                      port, strlen(state->VIN), timeSinceVINRequest);
+      return true; // Allow charging during grace period
+    }
+
+    Serial.printlnf("Port %d - Charging not authorized: incomplete VIN (length "
+                    "%d): '%s', grace period expired",
+                    port, strlen(state->VIN), state->VIN);
+    return false;
+  }
+
+  // Check if we're awaiting cloud response (charging should only start after
+  // cloud approval unless in grace period)
+  if (state->awaiting_cloud_vin_resp) {
+    Serial.printlnf(
+        "Port %d - Charging not authorized: still awaiting cloud VIN response",
+        port);
+    return false;
+  }
+
+  Serial.printlnf(
+      "Port %d - Charging authorized: vehicle secured with valid VIN: %s", port,
+      state->VIN);
+
+  return true;
+}
+
+void PortEventHandler::logSecurityEvent(int port, const char *eventType,
+                                        const char *details) {
+  Serial.printlnf("SECURITY EVENT - Port %d: %s - %s", port, eventType,
+                  details);
+
+  // Publish to cloud for centralized monitoring
+  char buffer[128];
+  snprintf(buffer, sizeof(buffer), "SECURITY_EVENT,%d,%s,%s", port, eventType,
+           details);
+  publishStatusToCloud(port, buffer);
+}
+
+void PortEventHandler::validatePortSecurity(int port) {
+  PortState *state = getPortState(port);
+  if (!state) {
+    return;
+  }
+
+  // Periodic security validation
+  if (state->charging) {
+    if (!state->vehicle_secured) {
+      logSecurityEvent(port, "UNSECURED_CHARGING",
+                       "Vehicle charging without security");
+      state->emergency_exit_flag = true;
+    }
+
+    if (strlen(state->VIN) < VIN_LENGTH) {
+      char details[64];
+      snprintf(details, sizeof(details), "Incomplete_VIN_length_%d",
+               strlen(state->VIN));
+      logSecurityEvent(port, "INVALID_VIN_CHARGING", details);
+      state->emergency_exit_flag = true;
+    }
+  }
 }

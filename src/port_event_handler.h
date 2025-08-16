@@ -37,6 +37,14 @@ public:
   void handleStatusMessage(const ParsedCANMessage &message);
 
   /**
+   * Validate if charging is authorized for a port
+   * Checks vehicle security, VIN completeness, and cloud approval status
+   * @param port Port number to validate
+   * @return true if charging is authorized, false otherwise
+   */
+  bool isChargingAuthorized(int port);
+
+  /**
    * Handle VIN response messages (K)
    * @param message Parsed VIN message
    */
@@ -135,6 +143,20 @@ private:
    */
   void formatCloudMessage(const char *command, const char *variant, int port,
                           const char *success, char *buffer, size_t bufferSize);
+
+  /**
+   * Log security events for monitoring and alerting
+   * @param port Port number where event occurred
+   * @param eventType Type of security event
+   * @param details Additional details about the event
+   */
+  void logSecurityEvent(int port, const char *eventType, const char *details);
+
+  /**
+   * Perform periodic security validation on a port
+   * @param port Port number to validate
+   */
+  void validatePortSecurity(int port);
 };
 
 // Global instance (extern declaration)

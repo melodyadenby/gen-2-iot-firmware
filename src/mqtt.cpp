@@ -6,6 +6,7 @@
 #include "fixes/json_compat.h"
 #include "lights.h"
 #include "logging.h"
+#include "port_event_handler.h"
 #include "port_state.h"
 #include "utils.h"
 #include <ArduinoJson.h>
@@ -74,9 +75,7 @@ void initializeMQTT() {
   Serial.println("MQTT initialized");
 }
 
-void handleMQTTClientLoop() {
-  client.loop();
-}
+void handleMQTTClientLoop() { client.loop(); }
 
 void handleMQTT() {
   BROKER_CONNECTED = client.isConnected();
@@ -326,12 +325,19 @@ void processMQTTCommand(char cmd, char variant, int port, char btn,
   switch (cmd) {
   case 'C': // Charge command
     if (isValidPort(port) && portState) {
-      portState->check_charge_status = true;
-      portState->charge_varient = '2'; // variant;
-      portState->send_charge_flag = true;
-      portState->awaiting_cloud_vin_resp = false;
-      Serial.printlnf("Charge command for port %d, variant %c\n", port,
-                      variant);
+      // Security validation: Only allow charging if properly authorized
+      if (portEventHandler && portEventHandler->isChargingAuthorized(port)) {
+        portState->check_charge_status = true;
+        portState->charge_varient = '2'; // variant;
+        portState->send_charge_flag = true;
+        portState->awaiting_cloud_vin_resp = false;
+        Serial.printlnf("Charge command authorized for port %d, variant %c\n",
+                        port, variant);
+      } else {
+        Serial.printlnf("SECURITY VIOLATION: Charge command denied for port %d "
+                        "- not authorized\n",
+                        port);
+      }
     } else {
       Serial.printlnf("Invalid port for charge command: %d\n", port);
     }
@@ -397,10 +403,21 @@ void processMQTTCommand(char cmd, char variant, int port, char btn,
     }
     case '1': {
       Serial.println("VIN Validated, charging allowed");
-      portState->check_charge_status = true;
-      portState->charge_varient = '2'; // variant;
-      portState->send_charge_flag = true;
-      portState->awaiting_cloud_vin_resp = false;
+      // Security validation: Only allow charging if properly authorized
+      if (portEventHandler && portEventHandler->isChargingAuthorized(port)) {
+        portState->check_charge_status = true;
+        portState->charge_varient = '2'; // variant;
+        portState->send_charge_flag = true;
+        portState->awaiting_cloud_vin_resp = false;
+        Serial.printlnf(
+            "Cloud VIN validation successful - charging authorized for port %d",
+            port);
+      } else {
+        Serial.printlnf("SECURITY VIOLATION: Cloud VIN validation received but "
+                        "port %d not properly authorized",
+                        port);
+        portState->awaiting_cloud_vin_resp = false;
+      }
       // Serial.println("Printing each character with index:");
       // for (int i = 0; i < strlen(p); i++)
       // {
