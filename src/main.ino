@@ -717,8 +717,6 @@ void canThread() {
       delay(10);
     }
 
-    // Feed hardware watchdog during port request thread
-    ApplicationWatchdog::checkin();
   }
 }
 
@@ -736,8 +734,6 @@ void port_request_thread() {
       delay(100);
     }
 
-    // Feed hardware watchdog during CAN thread
-    ApplicationWatchdog::checkin();
   }
 }
 
@@ -1429,9 +1425,6 @@ void canHealthMonitorThread() {
 
       lastHealthCheck = currentTime;
     }
-
-    // Feed hardware watchdog during health monitoring
-    ApplicationWatchdog::checkin();
 
     delay(1000); // Check every second
   }

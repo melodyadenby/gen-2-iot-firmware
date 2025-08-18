@@ -83,7 +83,8 @@ void PortFlagHandler::handleUnlockCommand(int port) {
   if (state->emergency_exit_flag) {
     // Check if enough time has passed since last emergency unlock
     unsigned long currentTime = millis();
-    if (currentTime - state->last_emergency_unlock_time < EMERGENCY_UNLOCK_DELAY) {
+    if (currentTime - state->last_emergency_unlock_time <
+        EMERGENCY_UNLOCK_DELAY) {
       return; // Still in delay period, skip this attempt
     }
 
@@ -135,7 +136,7 @@ void PortFlagHandler::handleChargeCommand(int port) {
   // Convert single char to string
   char variantStr[2] = {state->charge_varient, '\0'};
 
-  if (sendPortCommand(port, 'C', variantStr, 10 * SEC_TO_MS_MULTIPLIER) ==
+  if (sendPortCommand(port, 'C', variantStr, 2 * PORT_CHECK_INTERVAL) ==
       ERROR_OK) {
     markPortsUnpolled();
     state->send_charge_flag = false;
@@ -217,7 +218,8 @@ void PortFlagHandler::handleEmergencyExit(int port) {
 
   // Check if enough time has passed since last emergency unlock
   unsigned long currentTime = millis();
-  if (currentTime - state->last_emergency_unlock_time < EMERGENCY_UNLOCK_DELAY) {
+  if (currentTime - state->last_emergency_unlock_time <
+      EMERGENCY_UNLOCK_DELAY) {
     return; // Still in delay period, skip this attempt
   }
 
@@ -258,10 +260,10 @@ void PortFlagHandler::handleButtonState(int port) {
   }
 
   logFlagActivity(port, "BUTTON_STATE", "Sending button state");
-
-  char buffer[32];
-  snprintf(buffer, sizeof(buffer), "BUTTON,%d,%c", port, state->button_state);
-  publishToCloud(buffer);
+  // TEMP REMOVE
+  //  char buffer[32];
+  //  snprintf(buffer, sizeof(buffer), "BUTTON,%d,%c", port,
+  //  state->button_state); publishToCloud(buffer);
 
   state->send_button_state_flag = false;
 }
@@ -397,11 +399,11 @@ void PortFlagHandler::handleChargeSuccess(int port) {
 
   PortState *state = getPortState(port);
   if (state) {
-    // Publish charge success to cloud: C,variant,port,1
-    char buffer[16];
-    char variantStr[2] = {state->charge_varient, '\0'};
-    formatCloudMessage("C", variantStr, port, "1", buffer, sizeof(buffer));
-    // publishToCloud(buffer);
+    // // Publish charge success to cloud: C,variant,port,1
+    // char buffer[16];
+    // char variantStr[2] = {state->charge_varient, '\0'};
+    // formatCloudMessage("C", variantStr, port, "1", buffer, sizeof(buffer));
+    // // publishToCloud(buffer);
 
     state->check_charge_status = false;
     state->charge_successful = false;
@@ -415,11 +417,11 @@ void PortFlagHandler::handleChargeFailure(int port) {
 
   PortState *state = getPortState(port);
   if (state) {
-    // Publish charge failure to cloud: C,variant,port,0
-    char buffer[16];
-    char variantStr[2] = {state->charge_varient, '\0'};
-    formatCloudMessage("C", variantStr, port, "0", buffer, sizeof(buffer));
-    // publishToCloud(buffer);
+    // // Publish charge failure to cloud: C,variant,port,0
+    // char buffer[16];
+    // char variantStr[2] = {state->charge_varient, '\0'};
+    // formatCloudMessage("C", variantStr, port, "0", buffer, sizeof(buffer));
+    // // publishToCloud(buffer);
 
     state->check_charge_status = false;
     state->charge_successful = false;

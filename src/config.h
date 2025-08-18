@@ -11,6 +11,7 @@
 // Time Conversion Constants
 const int MIN_TO_MS_MULTIPLIER = 60000;
 const int SEC_TO_MS_MULTIPLIER = 1000;
+const int HOUR_TO_MS_MULTIPLIER = 60 * MIN_TO_MS_MULTIPLIER;
 
 // Environment Definitions
 #define ENV_PROD 0

@@ -36,7 +36,7 @@ unsigned long lastHeartbeatRetryTime = 0;
 unsigned long lastMqttMessageReceived = 0;
 unsigned long lastMqttHealthCheck = 0;
 const unsigned long MQTT_MESSAGE_TIMEOUT =
-    300000; // 5 minutes without messages = unhealthy
+    3 * HOUR_TO_MS_MULTIPLIER;
 const unsigned long MQTT_HEALTH_CHECK_INTERVAL =
     60000; // Check every 60 seconds
 bool mqttHealthy = true;
