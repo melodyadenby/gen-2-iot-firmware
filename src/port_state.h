@@ -7,6 +7,7 @@
 
 const unsigned long PORT_CHECK_INTERVAL = 60 * SEC_TO_MS_MULTIPLIER;
 const unsigned long POLL_STAGGER_DELAY = 1000; // 500ms between requests
+const unsigned long EMERGENCY_UNLOCK_DELAY = 10 * SEC_TO_MS_MULTIPLIER; // 10 seconds between emergency unlocks
 
 const int VIN_LENGTH = 16;
 const int MAX_UNLOCK_RETRY = 3;
@@ -46,6 +47,7 @@ struct PortState
   bool charge_successful;      // charge success?
   bool heartbeat_success;
   int unlock_retry_count;        // Number of unlock retries attempted
+  unsigned long last_emergency_unlock_time; // Last time emergency unlock was sent
   char charge_varient;           // Current charge varient
   char volts[3];                 // Port Voltage
   char amps[3];                  // Port Amperage

@@ -81,11 +81,18 @@ void PortFlagHandler::handleUnlockCommand(int port) {
   }
 
   if (state->emergency_exit_flag) {
+    // Check if enough time has passed since last emergency unlock
+    unsigned long currentTime = millis();
+    if (currentTime - state->last_emergency_unlock_time < EMERGENCY_UNLOCK_DELAY) {
+      return; // Still in delay period, skip this attempt
+    }
+
     logFlagActivity(port, "EMERGENCY_EXIT", "Processing emergency unlock");
 
     if (sendPortCommand(port, 'U', "0", 3 * SEC_TO_MS_MULTIPLIER) == ERROR_OK) {
       state->send_unlock_flag = false;
       state->check_unlock_status = true;
+      state->last_emergency_unlock_time = currentTime;
     } else {
       handleCommandError(port, "EMERGENCY_UNLOCK", -1);
     }
@@ -208,10 +215,17 @@ void PortFlagHandler::handleEmergencyExit(int port) {
     return;
   }
 
+  // Check if enough time has passed since last emergency unlock
+  unsigned long currentTime = millis();
+  if (currentTime - state->last_emergency_unlock_time < EMERGENCY_UNLOCK_DELAY) {
+    return; // Still in delay period, skip this attempt
+  }
+
   logFlagActivity(port, "EMERGENCY_EXIT", "Processing emergency exit");
 
   // Emergency exit triggers unlock command
   state->send_unlock_flag = true;
+  state->last_emergency_unlock_time = currentTime;
 }
 
 void PortFlagHandler::handleVINToCloud(int port) {

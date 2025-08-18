@@ -96,8 +96,9 @@ public:
    * Publish status update to cloud
    * @param port Port number
    * @param status Status message to publish
+   * @param statusSize Size of the status buffer
    */
-  void publishStatusToCloud(int port, const char *status);
+  void publishStatusToCloud(int port, const char *status, size_t statusSize);
 
   /**
    * Reset port state after successful unlock

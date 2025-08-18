@@ -80,6 +80,7 @@ void resetPortState(int portNumber) {
   port->send_vin_request_timer = 0;
   port->last_poll_time = 0;
   port->cloud_vin_resp_timer = 0;
+  port->last_emergency_unlock_time = 0;
 
   // Reset character values
   port->button_state = 0;

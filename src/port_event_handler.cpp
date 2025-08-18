@@ -101,7 +101,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     char buffer[64];
     snprintf(buffer, sizeof(buffer), "SECURITY_VIOLATION,%d,CHARGING_UNSECURED",
              port);
-    publishStatusToCloud(port, buffer);
+    publishStatusToCloud(port, buffer, sizeof(buffer));
 
     Serial.printlnf("Port %d - Emergency exit triggered for unsecured charging",
                     port);
@@ -143,7 +143,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
       char buffer[64];
       snprintf(buffer, sizeof(buffer),
                "SECURITY_VIOLATION,%d,INCOMPLETE_VIN_TIMEOUT", port);
-      publishStatusToCloud(port, buffer);
+      publishStatusToCloud(port, buffer, sizeof(buffer));
 
       Serial.printlnf("Port %d - Emergency exit triggered for VIN timeout",
                       port);
@@ -199,7 +199,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
       char buffer[64];
       snprintf(buffer, sizeof(buffer),
                "SECURITY_VIOLATION,%d,TRAPPED_VIN_TIMEOUT", port);
-      publishStatusToCloud(port, buffer);
+      publishStatusToCloud(port, buffer, sizeof(buffer));
 
       Serial.printlnf("Port %d - Emergency exit triggered for trapped vehicle",
                       port);
@@ -439,7 +439,7 @@ void PortEventHandler::handleTemperatureMessage(
   char buffer[64];
   snprintf(buffer, sizeof(buffer), "TEMP,%d,%s", port,
            message.tempData.temperature);
-  publishStatusToCloud(port, buffer);
+  publishStatusToCloud(port, buffer, sizeof(buffer));
 }
 
 void PortEventHandler::handleFirmwareMessage(const ParsedCANMessage &message) {
@@ -460,7 +460,7 @@ void PortEventHandler::handleFirmwareMessage(const ParsedCANMessage &message) {
   char buffer[64];
   snprintf(buffer, sizeof(buffer), "FW_VER,%d,%s", port,
            message.firmwareData.version);
-  publishStatusToCloud(port, buffer);
+  publishStatusToCloud(port, buffer, sizeof(buffer));
 }
 
 void PortEventHandler::handleHeartbeatMessage(const ParsedCANMessage &message) {
@@ -526,18 +526,20 @@ void PortEventHandler::handleForceEjectMessage(
   // Publish emergency eject to cloud
   char buffer[32];
   snprintf(buffer, sizeof(buffer), "FORCE_EJECT,%d", port);
-  publishStatusToCloud(port, buffer);
+  publishStatusToCloud(port, buffer, sizeof(buffer));
 }
 
-void PortEventHandler::publishStatusToCloud(int port, const char *status) {
-  if (isMQTTConnected()) {
-    publishCloud(String(status));
-  } else {
-    // Fallback to Particle cloud
+void PortEventHandler::publishStatusToCloud(int port, const char *status, size_t statusSize) {
     char eventName[32];
     snprintf(eventName, sizeof(eventName), "port_%d_status", port);
-    Particle.publish(eventName, status, PRIVATE);
-  }
+    
+    // Create safe copy with guaranteed null termination
+    char safeStatus[256];
+    size_t maxCopy = (statusSize > 0 && statusSize < sizeof(safeStatus)) ? statusSize - 1 : sizeof(safeStatus) - 1;
+    strncpy(safeStatus, status, maxCopy);
+    safeStatus[maxCopy] = '\0';
+    
+    Particle.publish(eventName, safeStatus, PRIVATE);
 }
 
 void PortEventHandler::resetPortAfterUnlock(int port) {
@@ -576,7 +578,7 @@ void PortEventHandler::handleCommandTimeout(int port, const char *commandType) {
   // Publish timeout to cloud
   char buffer[64];
   snprintf(buffer, sizeof(buffer), "TIMEOUT,%d,%s", port, commandType);
-  publishStatusToCloud(port, buffer);
+  publishStatusToCloud(port, buffer, sizeof(buffer));
 
   // Reset relevant flags
   PortState *state = getPortState(port);
@@ -676,7 +678,7 @@ void PortEventHandler::logSecurityEvent(int port, const char *eventType,
   char buffer[128];
   snprintf(buffer, sizeof(buffer), "SECURITY_EVENT,%d,%s,%s", port, eventType,
            details);
-  publishStatusToCloud(port, buffer);
+  publishStatusToCloud(port, buffer, sizeof(buffer));
 }
 
 void PortEventHandler::validatePortSecurity(int port) {
