@@ -113,6 +113,13 @@ public:
   void resetPortAfterCharge(int port);
 
   /**
+   * Process timed stuck vehicle unlock retries for all ports
+   * Checks if any ports have pending stuck vehicle unlock attempts
+   * and sends unlock commands when the retry delay has elapsed
+   */
+  void processStuckVehicleRetries();
+
+  /**
    * Handle command timeout scenarios
    * @param port Port number
    * @param commandType Type of command that timed out

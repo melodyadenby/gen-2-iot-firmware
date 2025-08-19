@@ -345,9 +345,11 @@ void PortFlagHandler::handleUnlockSuccess(int port) {
   publishToCloud(buffer);
 
   // Reset retry count on success
+  unsigned long currentMillis = millis();
   PortState *state = getPortState(port);
   if (state) {
     state->unlock_retry_count = 0;
+    state->last_unlock_success = currentMillis;
   }
 
   resetPortAfterOperation(port);

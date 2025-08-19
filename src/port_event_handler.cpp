@@ -386,6 +386,28 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
 
   // Check if VIN is complete (16 characters for full VIN)
   if (strlen(state->VIN) >= VIN_LENGTH) {
+    unsigned long currentTime = millis();
+    if (currentTime - state->last_unlock_success < STUCK_VEHICLE_LIMIT) {
+      if (state->stuck_unlock_retry_count < STUCK_VEHICLE_RETRY_LIMIT) {
+        Serial.println("VIN IS FULL, but this came really early, assume user did NOT pull the vehicle out intime. Scheduling unlock retry.");
+        Serial.printlnf("STUCK_VEHICLE_RETRY_COUNT: %d / %d",
+                        state->stuck_unlock_retry_count,
+                        STUCK_VEHICLE_RETRY_LIMIT);
+        
+        // Schedule a retry instead of immediate unlock to prevent CAN overflow
+        if (!state->stuck_vehicle_unlock_pending) {
+          state->stuck_vehicle_unlock_timer = currentTime + STUCK_VEHICLE_RETRY_DELAY;
+          state->stuck_vehicle_unlock_pending = true;
+          state->stuck_unlock_retry_count++;
+          Serial.printlnf("Port %d - Stuck vehicle unlock scheduled for %lu ms from now", 
+                          port, STUCK_VEHICLE_RETRY_DELAY);
+        }
+        return;
+      }
+      Serial.printlnf("Reached max retry, allowing docking event to happen.");
+      state->stuck_unlock_retry_count = 0;
+      state->stuck_vehicle_unlock_pending = false;
+    }
     Serial.printlnf("Port %d - COMPLETE VIN: %s", port, state->VIN);
 
     state->vin_request_flag = false;
@@ -395,7 +417,7 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
     Serial.printlnf("Port %d - Setting flags for cloud transmission", port);
     state->send_vin_to_cloud_flag = true;
     state->awaiting_cloud_vin_resp = true;
-    state->cloud_vin_resp_timer = millis();
+    state->cloud_vin_resp_timer = currentTime;
     if (!state->charging) {
       // Serial.printlnf("Port %d - Setting flags for cloud transmission",
       // port); state->send_vin_to_cloud_flag = true;
@@ -485,6 +507,11 @@ void PortEventHandler::handleUnlockMessage(const ParsedCANMessage &message) {
     state->send_unlock_flag = false;
     state->emergency_exit_flag = false;
     state->check_unlock_status = true;
+    
+    // Clear stuck vehicle state on successful unlock
+    state->stuck_vehicle_unlock_pending = false;
+    state->stuck_vehicle_unlock_timer = 0;
+    state->stuck_unlock_retry_count = 0;
   }
 
   Serial.printlnf("Unlock response from port %d", port);
@@ -529,17 +556,20 @@ void PortEventHandler::handleForceEjectMessage(
   publishStatusToCloud(port, buffer, sizeof(buffer));
 }
 
-void PortEventHandler::publishStatusToCloud(int port, const char *status, size_t statusSize) {
-    char eventName[32];
-    snprintf(eventName, sizeof(eventName), "port_%d_status", port);
-    
-    // Create safe copy with guaranteed null termination
-    char safeStatus[256];
-    size_t maxCopy = (statusSize > 0 && statusSize < sizeof(safeStatus)) ? statusSize - 1 : sizeof(safeStatus) - 1;
-    strncpy(safeStatus, status, maxCopy);
-    safeStatus[maxCopy] = '\0';
-    
-    Particle.publish(eventName, safeStatus, PRIVATE);
+void PortEventHandler::publishStatusToCloud(int port, const char *status,
+                                            size_t statusSize) {
+  char eventName[32];
+  snprintf(eventName, sizeof(eventName), "port_%d_status", port);
+
+  // Create safe copy with guaranteed null termination
+  char safeStatus[256];
+  size_t maxCopy = (statusSize > 0 && statusSize < sizeof(safeStatus))
+                       ? statusSize - 1
+                       : sizeof(safeStatus) - 1;
+  strncpy(safeStatus, status, maxCopy);
+  safeStatus[maxCopy] = '\0';
+
+  Particle.publish(eventName, safeStatus, PRIVATE);
 }
 
 void PortEventHandler::resetPortAfterUnlock(int port) {
@@ -558,6 +588,27 @@ void PortEventHandler::resetPortAfterUnlock(int port) {
     state->charge_varient = '\0';
     Serial.printlnf("Port %d - VIN cleared after unlock (vehicle leaving)",
                     port);
+  }
+}
+
+void PortEventHandler::processStuckVehicleRetries() {
+  unsigned long currentTime = millis();
+  
+  for (int port = 1; port <= MAX_PORTS; port++) {
+    PortState *state = getPortState(port);
+    if (!state) continue;
+    
+    // Check if it's time to send a stuck vehicle unlock retry
+    if (state->stuck_vehicle_unlock_pending && 
+        currentTime >= state->stuck_vehicle_unlock_timer) {
+      
+      Serial.printlnf("Port %d - Sending stuck vehicle unlock retry #%d", 
+                      port, state->stuck_unlock_retry_count);
+      
+      state->send_unlock_flag = true;
+      state->stuck_vehicle_unlock_pending = false;
+      state->stuck_vehicle_unlock_timer = 0;
+    }
   }
 }
 
