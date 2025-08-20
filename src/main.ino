@@ -43,6 +43,14 @@ volatile bool can_recovery_needed = false;
 const int MAX_CAN_ERRORS_PER_MINUTE = 50;
 const unsigned long CAN_ERROR_RESET_INTERVAL = 60000; // 1 minute
 
+// Internet connectivity monitoring constants
+const unsigned long INTERNET_DISCONNECT_RESET_TIMEOUT = 60000; // 1 minute
+const unsigned long INTERNET_RESET_COOLDOWN = 300000; // 5 minutes between resets
+const unsigned long INTERNET_SOFT_RECOVERY_TIMEOUT = 30000; // 30 seconds for soft recovery
+
+// Global polling state for thread safety
+volatile bool polling_cycle_active = false;
+
 // Hardware watchdog handles all freeze detection at 20-second timeout
 
 // Interrupt Health Monitoring
@@ -187,18 +195,6 @@ void initializeSystem() {
   initializeMQTT();
   initializeLedger();
 
-  Particle.variable("CAN_ERROR", CAN_ERROR);
-  Particle.variable("pub_id", MANUAL_MODE, STRING);
-  Particle.variable("MQTT_connected", BROKER_CONNECTED);
-  Particle.variable("credentialsFetched", credentialsFetched);
-  Particle.variable("total_messages_received", total_messages_received);
-
-  // VIN traffic monitoring variables
-  Particle.variable("pending_vins", g_pendingVINRequests);
-  Particle.variable("active_vins", g_activeVINRequests);
-  Particle.variable("vin_flood_protection", g_vinFloodProtection);
-  Particle.variable("last_vin_request", g_lastVINRequestTime);
-
   Serial.printlnf("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
   Serial.printlnf("Device ID: %s", Particle.deviceID().c_str());
   Serial.printlnf("Environment: %s", getCurrentEnvironment());
@@ -256,10 +252,11 @@ void initializeHardware() {
   lastInterruptCheck = millis();
   interruptHealthy = true;
 
-  // Start CAN processing thread
+  // Start alternate threads
   new Thread("can_thread", canThread);
   new Thread("port_request_thread", port_request_thread);
   new Thread("can_health_monitor", canHealthMonitorThread);
+  new Thread("internet_checker", internetCheckThread);
 
   Serial.printlnf("Hardware initialized");
 }
@@ -270,10 +267,22 @@ void initializeParticle() {
   Particle.function("getPortVin", forceGetVin);
   Particle.function("getPortStatus", forceGetPortStatus);
 
+  Particle.variable("CAN_ERROR", CAN_ERROR);
+  Particle.variable("pub_id", MANUAL_MODE, STRING);
+  Particle.variable("MQTT_connected", BROKER_CONNECTED);
+  Particle.variable("credentialsFetched", credentialsFetched);
+  Particle.variable("total_messages_received", total_messages_received);
+
+  // VIN traffic monitoring variables
+  Particle.variable("pending_vins", g_pendingVINRequests);
+  Particle.variable("active_vins", g_activeVINRequests);
+  Particle.variable("vin_flood_protection", g_vinFloodProtection);
+  Particle.variable("last_vin_request", g_lastVINRequestTime);
+
   // Connect to Particle Cloud
   Particle.connect();
-  Particle.publishVitals();
-  Particle.keepAlive(PARTICLE_KEEPALIVE_MIN * 60);
+  Particle.publishVitals(60);
+  Particle.keepAlive(30);
 
   // Enable system features
   System.enableFeature(FEATURE_RESET_INFO);
@@ -350,7 +359,6 @@ void handlePortDataRequests() {
   // Add static variables for timing control
   static unsigned long last_function_run_time = 0;
   static bool first_run = true;
-  static bool polling_cycle_active = false;
   static int current_poll_port = 1;
 
   // Only run this function on first call or once per PORT_CHECK_INTERVAL
@@ -716,7 +724,6 @@ void canThread() {
       // Small delay to prevent busy-waiting
       delay(10);
     }
-
   }
 }
 
@@ -733,7 +740,6 @@ void port_request_thread() {
       // Small delay to prevent busy-waiting
       delay(100);
     }
-
   }
 }
 
@@ -1257,6 +1263,88 @@ void emergencyReset(const char *reason) {
                   canErrorMonitor.totalErrors);
   delay(200); // Ensure message is sent
   System.reset();
+}
+
+// Internet connectivity monitoring thread with safety features
+// This thread monitors internet connection and performs recovery actions:
+// 1. Soft recovery (disconnect/reconnect) after 30 seconds
+// 2. Hard reset after 1 minute, but only if system is in safe state
+void internetCheckThread() {
+  bool FIRST_DISCONNECT = false;
+  bool connected = true;
+  bool softRecoveryAttempted = false;
+  unsigned long disconnectTime = 0;
+  static unsigned long lastResetTime = 0;
+
+  while (true) {
+    connected = Particle.connected();
+
+    if (!connected) {
+      if (!FIRST_DISCONNECT) {
+        Serial.println("Internet disconnected - starting recovery timeline");
+        FIRST_DISCONNECT = true;
+        softRecoveryAttempted = false;
+        disconnectTime = millis();
+      }
+
+      unsigned long disconnectedDuration = millis() - disconnectTime;
+
+      // Try soft recovery after 30 seconds
+      if (!softRecoveryAttempted && disconnectedDuration > INTERNET_SOFT_RECOVERY_TIMEOUT) {
+        Serial.println("Attempting soft network recovery (disconnect/reconnect)");
+        Particle.disconnect();
+        delay(2000);
+        Particle.connect();
+        softRecoveryAttempted = true;
+        disconnectTime = millis(); // Reset timer to give soft recovery a chance
+      }
+
+      // Hard reset after 1 minute AND if it's safe to do so
+      if (disconnectedDuration > INTERNET_DISCONNECT_RESET_TIMEOUT) {
+        // Safety checks before reset - don't interrupt critical operations
+        bool safeToReset = true;
+
+        // Don't reset too frequently (minimum 5 minutes between resets)
+        if (millis() - lastResetTime < INTERNET_RESET_COOLDOWN) {
+          Serial.printlnf("SAFETY: Delaying reset - only %lu ms since last reset (need %lu ms)",
+                         millis() - lastResetTime, INTERNET_RESET_COOLDOWN);
+          safeToReset = false;
+        }
+
+        // Don't reset during active CAN operations
+        if (polling_cycle_active) {
+          Serial.println("SAFETY: Delaying reset - CAN polling cycle active");
+          safeToReset = false;
+        }
+
+        // Don't reset if CAN recovery is in progress
+        if (can_recovery_needed || CAN_ERROR) {
+          Serial.println("SAFETY: Delaying reset - CAN recovery in progress");
+          safeToReset = false;
+        }
+
+        if (safeToReset) {
+          Serial.printlnf("RESET: Internet disconnected for %lu ms - performing device reset", disconnectedDuration);
+          lastResetTime = millis();
+          resetDevice("");
+        } else {
+          // Reset the timer to check again in another cycle
+          disconnectTime = millis() - INTERNET_SOFT_RECOVERY_TIMEOUT;
+        }
+      }
+    } else {
+      // Connection restored
+      FIRST_DISCONNECT = false;
+      softRecoveryAttempted = false;
+      if (disconnectTime > 0) {
+        Serial.printlnf("Internet reconnected after %lu ms offline",
+                        millis() - disconnectTime);
+        disconnectTime = 0;
+      }
+    }
+
+    delay(5000); // Check connectivity every 5 seconds
+  }
 }
 
 void canHealthMonitorThread() {
