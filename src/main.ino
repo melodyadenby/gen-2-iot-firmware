@@ -420,6 +420,7 @@ void handlePortDataRequests() {
     // Only print the message when we're actually resetting
     if (current_time - last_port_check_reset >= PORT_CHECK_INTERVAL) {
       markPortsUnpolled();
+      current_poll_port = 1;
       last_port_check_reset = current_time; // Update the last reset time
       Serial.println("🚨 DID_PORT_CHECK reset for all ports 🚨");
     }
@@ -427,7 +428,6 @@ void handlePortDataRequests() {
     // Start a new polling cycle
     if (!polling_cycle_active) {
       polling_cycle_active = true;
-      current_poll_port = 1;
       Serial.println("Starting new polling cycle for all ports");
     }
   }
