@@ -48,6 +48,12 @@ public:
   void handleUnlockCommand(int port);
 
   /**
+   * Handle manual tag read flag
+   * @param port Port number
+   */
+  void handleManualTagRead(int port);
+
+  /**
    * Handle charge command flag
    * @param port Port number
    */
