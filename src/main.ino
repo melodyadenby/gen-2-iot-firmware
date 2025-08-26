@@ -45,8 +45,10 @@ const unsigned long CAN_ERROR_RESET_INTERVAL = 60000; // 1 minute
 
 // Internet connectivity monitoring constants
 const unsigned long INTERNET_DISCONNECT_RESET_TIMEOUT = 60000; // 1 minute
-const unsigned long INTERNET_RESET_COOLDOWN = 300000; // 5 minutes between resets
-const unsigned long INTERNET_SOFT_RECOVERY_TIMEOUT = 30000; // 30 seconds for soft recovery
+const unsigned long INTERNET_RESET_COOLDOWN =
+    300000; // 5 minutes between resets
+const unsigned long INTERNET_SOFT_RECOVERY_TIMEOUT =
+    30000; // 30 seconds for soft recovery
 
 // Global polling state for thread safety
 volatile bool polling_cycle_active = false;
@@ -135,6 +137,13 @@ void setup() {
 
   if (!CAN_ERROR) {
     initializeParticle();
+
+    // Start alternate threads
+    new Thread("can_thread", canThread);
+    new Thread("port_request_thread", port_request_thread);
+    new Thread("can_health_monitor", canHealthMonitorThread);
+    new Thread("internet_checker", internetCheckThread);
+
     requestCredentials();
 
     // Initialize recovery state
@@ -252,11 +261,6 @@ void initializeHardware() {
   lastInterruptCheck = millis();
   interruptHealthy = true;
 
-  // Start alternate threads
-  new Thread("can_thread", canThread);
-  new Thread("port_request_thread", port_request_thread);
-  new Thread("can_health_monitor", canHealthMonitorThread);
-  new Thread("internet_checker", internetCheckThread);
 
   Serial.printlnf("Hardware initialized");
 }
@@ -1270,80 +1274,70 @@ void emergencyReset(const char *reason) {
 // 1. Soft recovery (disconnect/reconnect) after 30 seconds
 // 2. Hard reset after 1 minute, but only if system is in safe state
 void internetCheckThread() {
-  bool FIRST_DISCONNECT = false;
-  bool connected = true;
-  bool softRecoveryAttempted = false;
-  unsigned long disconnectTime = 0;
+  static bool FIRST_DISCONNECT = false;
+  static bool connected = true;
+  static bool softRecoveryAttempted = false;
+  static unsigned long disconnectTime = 0;
   static unsigned long lastResetTime = 0;
-
+  static unsigned long lastCheckTime = 0;
   while (true) {
-    connected = Particle.connected();
+    // Non-blocking check every 5 seconds
+    if (millis() - lastCheckTime > 5000) {
 
-    if (!connected) {
-      if (!FIRST_DISCONNECT) {
-        Serial.println("Internet disconnected - starting recovery timeline");
-        FIRST_DISCONNECT = true;
-        softRecoveryAttempted = false;
-        disconnectTime = millis();
-      }
+      lastCheckTime = millis();
 
-      unsigned long disconnectedDuration = millis() - disconnectTime;
+      connected = Particle.connected();
 
-      // Try soft recovery after 30 seconds
-      if (!softRecoveryAttempted && disconnectedDuration > INTERNET_SOFT_RECOVERY_TIMEOUT) {
-        Serial.println("Attempting soft network recovery (disconnect/reconnect)");
-        Particle.disconnect();
-        delay(2000);
-        Particle.connect();
-        softRecoveryAttempted = true;
-        disconnectTime = millis(); // Reset timer to give soft recovery a chance
-      }
-
-      // Hard reset after 1 minute AND if it's safe to do so
-      if (disconnectedDuration > INTERNET_DISCONNECT_RESET_TIMEOUT) {
-        // Safety checks before reset - don't interrupt critical operations
-        bool safeToReset = true;
-
-        // Don't reset too frequently (minimum 5 minutes between resets)
-        if (millis() - lastResetTime < INTERNET_RESET_COOLDOWN) {
-          Serial.printlnf("SAFETY: Delaying reset - only %lu ms since last reset (need %lu ms)",
-                         millis() - lastResetTime, INTERNET_RESET_COOLDOWN);
-          safeToReset = false;
+      if (!connected) {
+        if (!FIRST_DISCONNECT) {
+          Serial.println("Internet disconnected - starting recovery timeline");
+          FIRST_DISCONNECT = true;
+          softRecoveryAttempted = false;
+          disconnectTime = millis();
         }
 
-        // Don't reset during active CAN operations
-        if (polling_cycle_active) {
-          Serial.println("SAFETY: Delaying reset - CAN polling cycle active");
-          safeToReset = false;
+        unsigned long disconnectedDuration = millis() - disconnectTime;
+
+        // Try soft recovery after 30 seconds
+        if (!softRecoveryAttempted &&
+            disconnectedDuration > INTERNET_SOFT_RECOVERY_TIMEOUT) {
+          Serial.println(
+              "Attempting soft network recovery (disconnect/reconnect)");
+          Particle.disconnect();
+          delay(2000);
+          Particle.connect();
+          softRecoveryAttempted = true;
+          disconnectTime =
+              millis(); // Reset timer to give soft recovery a chance
         }
 
-        // Don't reset if CAN recovery is in progress
-        if (can_recovery_needed || CAN_ERROR) {
-          Serial.println("SAFETY: Delaying reset - CAN recovery in progress");
-          safeToReset = false;
-        }
+        // Hard reset after 1 minute
+        if (disconnectedDuration > INTERNET_DISCONNECT_RESET_TIMEOUT) {
+          // Safety checks before reset - don't interrupt critical operations
+          bool safeToReset = true;
 
-        if (safeToReset) {
-          Serial.printlnf("RESET: Internet disconnected for %lu ms - performing device reset", disconnectedDuration);
-          lastResetTime = millis();
-          resetDevice("");
-        } else {
-          // Reset the timer to check again in another cycle
-          disconnectTime = millis() - INTERNET_SOFT_RECOVERY_TIMEOUT;
+          // Don't reset too frequently (minimum 5 minutes between resets)
+          if (millis() - lastResetTime >= INTERNET_RESET_COOLDOWN) {
+            Serial.printlnf("RESET: Internet disconnected for %lu ms - "
+                            "performing device reset",
+                            disconnectedDuration);
+            lastResetTime = millis();
+            resetDevice("");
+          }
+        }
+      } else {
+        // Connection restored
+        if (FIRST_DISCONNECT) {
+          Serial.printlnf("Internet reconnected after %lu ms offline",
+                          millis() - disconnectTime);
+          FIRST_DISCONNECT = false;
+          softRecoveryAttempted = false;
+          disconnectTime = 0;
         }
       }
     } else {
-      // Connection restored
-      FIRST_DISCONNECT = false;
-      softRecoveryAttempted = false;
-      if (disconnectTime > 0) {
-        Serial.printlnf("Internet reconnected after %lu ms offline",
-                        millis() - disconnectTime);
-        disconnectTime = 0;
-      }
+      delay(100);
     }
-
-    delay(5000); // Check connectivity every 5 seconds
   }
 }
 
@@ -1514,7 +1508,7 @@ void canHealthMonitorThread() {
       lastHealthCheck = currentTime;
     }
 
-    delay(1000); // Check every second
+    delay(100); // Check every second
   }
 }
 

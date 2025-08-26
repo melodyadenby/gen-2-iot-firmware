@@ -3,7 +3,7 @@
 
 // System Configuration - must be first
 SYSTEM_THREAD(ENABLED);
-SYSTEM_MODE(AUTOMATIC);
+SYSTEM_MODE(SEMI_AUTOMATIC);
 
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
 
