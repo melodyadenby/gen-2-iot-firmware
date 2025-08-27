@@ -195,7 +195,7 @@ bool connect_broker() {
     return true; // If already connected, don't attempt to reconnect
   }
 
-  if (!Particle.connected()) {
+  if (!CELLULAR_CONNECTED) {
     Serial.println("Internet not connected. Cannot connect to MQTT.");
     return false;
   }
@@ -521,7 +521,7 @@ String getMQTTStatus() {
     return "Connected";
   } else if (!areCredentialsValid()) {
     return "Waiting for credentials";
-  } else if (!Particle.connected()) {
+  } else if (!CELLULAR_CONNECTED) {
     return "No internet connection";
   } else {
     return "Disconnected - Retrying";
@@ -539,7 +539,7 @@ bool shouldRetryMQTT() {
     return false;
   }
 
-  if (!areCredentialsValid() || !Particle.connected()) {
+  if (!areCredentialsValid() || !CELLULAR_CONNECTED) {
     return false;
   }
 

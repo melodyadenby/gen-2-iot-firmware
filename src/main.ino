@@ -24,6 +24,7 @@ PRODUCT_VERSION(PRODUCT_VERSION_NUM);
 // Global CAN state variables
 char can_err_msg[200];
 bool CAN_ERROR = false;
+bool CELLULAR_CONNECTED = false;
 
 // Architecture components
 PortEventHandler *portEventHandler = nullptr;
@@ -119,7 +120,6 @@ void checkInterruptHealth();
 void recoverInterruptSystem();
 void checkTransmissionReceptionBalance();
 void handleRxOverflowWithEscalation(unsigned long currentTime);
-void handleSerialCommands();
 
 // Hardware watchdog handler
 void hardwareWatchdogHandler() { System.reset(RESET_NO_WAIT); }
@@ -261,7 +261,6 @@ void initializeHardware() {
   lastInterruptCheck = millis();
   interruptHealthy = true;
 
-
   Serial.printlnf("Hardware initialized");
 }
 
@@ -283,7 +282,6 @@ void initializeParticle() {
   Particle.variable("vin_flood_protection", g_vinFloodProtection);
   Particle.variable("last_vin_request", g_lastVINRequestTime);
 
-  // Connect to Particle Cloud
   Particle.connect();
   Particle.publishVitals(60);
   Particle.keepAlive(30);
@@ -297,12 +295,11 @@ void initializeParticle() {
   waitFor(Particle.connected, 60000);
   if (!Particle.connected()) {
     Serial.printlnf("Failed to connect to Particle Cloud");
-    resetDevice("Cloud connection timeout");
-    return;
+    resetDevice("");
   }
 
   // Log reset reason
-  logResetReason();
+  // logResetReason();
 
   setLightBlue();
   Serial.printlnf("Particle Cloud connected");
@@ -347,9 +344,6 @@ void handleSystemLoop() {
 
   // Check for pending port status requests
   checkPortStatusRequest();
-
-  // Handle serial debug commands
-  handleSerialCommands();
 
   // Small delay to prevent CPU overload
   delay(5);
@@ -721,13 +715,9 @@ void canThread() {
       if (portFlagHandler) {
         portFlagHandler->processAllPortFlags();
       }
-
-      // Small delay to prevent busy-waiting
-      delay(10);
-    } else {
-      // Small delay to prevent busy-waiting
-      delay(10);
     }
+    // Small delay to prevent busy-waiting
+    delay(10);
   }
 }
 
@@ -1274,66 +1264,45 @@ void emergencyReset(const char *reason) {
 // 1. Soft recovery (disconnect/reconnect) after 30 seconds
 // 2. Hard reset after 1 minute, but only if system is in safe state
 void internetCheckThread() {
-  static bool FIRST_DISCONNECT = false;
   static bool connected = true;
-  static bool softRecoveryAttempted = false;
+  static bool did_disconnect = false;
   static unsigned long disconnectTime = 0;
-  static unsigned long lastResetTime = 0;
   static unsigned long lastCheckTime = 0;
+  static bool calledConnect = false;
   while (true) {
     // Non-blocking check every 5 seconds
     if (millis() - lastCheckTime > 5000) {
 
       lastCheckTime = millis();
 
-      connected = Particle.connected();
+      CELLULAR_CONNECTED = (Cellular.ready() && Particle.connected());
 
-      if (!connected) {
-        if (!FIRST_DISCONNECT) {
-          Serial.println("Internet disconnected - starting recovery timeline");
-          FIRST_DISCONNECT = true;
-          softRecoveryAttempted = false;
-          disconnectTime = millis();
-        }
-
+      if (!CELLULAR_CONNECTED) {
+        Serial.println("Internet disconnected - starting recovery timeline");
+        did_disconnect = true;
+        disconnectTime = millis();
         unsigned long disconnectedDuration = millis() - disconnectTime;
-
-        // Try soft recovery after 30 seconds
-        if (!softRecoveryAttempted &&
-            disconnectedDuration > INTERNET_SOFT_RECOVERY_TIMEOUT) {
-          Serial.println(
-              "Attempting soft network recovery (disconnect/reconnect)");
-          Particle.disconnect();
-          delay(2000);
+        if (!calledConnect) {
           Particle.connect();
-          softRecoveryAttempted = true;
-          disconnectTime =
-              millis(); // Reset timer to give soft recovery a chance
+          calledConnect = true;
         }
-
         // Hard reset after 1 minute
         if (disconnectedDuration > INTERNET_DISCONNECT_RESET_TIMEOUT) {
-          // Safety checks before reset - don't interrupt critical operations
-          bool safeToReset = true;
 
-          // Don't reset too frequently (minimum 5 minutes between resets)
-          if (millis() - lastResetTime >= INTERNET_RESET_COOLDOWN) {
-            Serial.printlnf("RESET: Internet disconnected for %lu ms - "
-                            "performing device reset",
-                            disconnectedDuration);
-            lastResetTime = millis();
-            resetDevice("");
-          }
+          Serial.printlnf("RESET: Internet disconnected for %lu ms - "
+                          "performing device reset",
+                          disconnectedDuration);
+          resetDevice("");
         }
       } else {
-        // Connection restored
-        if (FIRST_DISCONNECT) {
+        if (did_disconnect) {
+          // Connection restored
           Serial.printlnf("Internet reconnected after %lu ms offline",
                           millis() - disconnectTime);
-          FIRST_DISCONNECT = false;
-          softRecoveryAttempted = false;
-          disconnectTime = 0;
         }
+        disconnectTime = 0;
+        did_disconnect = false;
+        calledConnect = false;
       }
     } else {
       delay(100);
@@ -1633,7 +1602,7 @@ void checkTransmissionReceptionBalance() {
   unsigned long currentTime = millis();
 
   // Only check TX/RX balance when system is fully operational
-  if (!Particle.connected() || !BROKER_CONNECTED || !areCredentialsValid()) {
+  if (!CELLULAR_CONNECTED || !BROKER_CONNECTED || !areCredentialsValid()) {
     // System not ready - reset timers to prevent false alarms
     static bool txRxWasReady = false;
     if (txRxWasReady) {
@@ -1757,53 +1726,5 @@ void handleRxOverflowWithEscalation(unsigned long currentTime) {
         canErrorMonitor.rxOverflowCount);
     canErrorMonitor.rxOverflowCount = 0;
     canErrorMonitor.firstRxOverflowTime = 0;
-  }
-}
-
-void handleSerialCommands() {
-  if (Serial.available()) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
-
-    if (command == "MQTT_STATUS") {
-      Serial.printlnf("=== MQTT Status ===");
-      Serial.printlnf("Connected: %s", isMQTTConnected() ? "yes" : "no");
-      Serial.printlnf("Healthy: %s", isMQTTHealthy() ? "yes" : "no");
-      Serial.printlnf("Status: %s", getMQTTStatus().c_str());
-      Serial.printlnf("Fail Count: %d", getMQTTFailCount());
-      Serial.printlnf("Last Send: %lu ms ago", millis() - getLastMQTTSend());
-      Serial.printlnf(
-          "Last Message Received: %lu ms ago",
-          lastMqttMessageReceived > 0 ? millis() - lastMqttMessageReceived : 0);
-      Serial.printlnf("Pub Topic: %s", MQTT_PUB_TOPIC);
-      Serial.printlnf("Sub Topic: %s", MQTT_SUB_TOPIC);
-    } else if (command == "MQTT_RECONNECT") {
-      Serial.println("Forcing MQTT reconnection...");
-      forceMQTTReconnect();
-    } else if (command == "MQTT_HEARTBEAT") {
-      Serial.println("Sending MQTT heartbeat...");
-      publishCloud("H,0,1");
-    } else if (command == "SYSTEM_STATUS") {
-      Serial.printlnf("=== System Status ===");
-      Serial.printlnf("Free Memory: %lu bytes", System.freeMemory());
-      Serial.printlnf("Uptime: %lu ms", millis());
-      Serial.printlnf("Particle Connected: %s",
-                      Particle.connected() ? "yes" : "no");
-      Serial.printlnf("Credentials Valid: %s",
-                      areCredentialsValid() ? "yes" : "no");
-      Serial.printlnf("CAN Error Count: %d", can_error_count);
-      Serial.printlnf("CAN Recovery Needed: %s",
-                      can_recovery_needed ? "yes" : "no");
-    } else if (command == "HELP") {
-      Serial.println("=== Available Commands ===");
-      Serial.println("MQTT_STATUS - Show MQTT connection details");
-      Serial.println("MQTT_RECONNECT - Force MQTT reconnection");
-      Serial.println("MQTT_HEARTBEAT - Send test heartbeat");
-      Serial.println("SYSTEM_STATUS - Show system health");
-      Serial.println("HELP - Show this help");
-    } else if (command.length() > 0) {
-      Serial.printlnf("Unknown command: %s (type HELP for available commands)",
-                      command.c_str());
-    }
   }
 }

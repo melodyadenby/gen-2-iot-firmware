@@ -18,6 +18,7 @@ extern char MQTT_PUB_TOPIC[256];
 extern char MQTT_SUB_TOPIC[256];
 extern char MANUAL_MODE[14];
 extern bool BROKER_CONNECTED;
+extern bool CELLULAR_CONNECTED;
 
 extern char portStatusRequest[64];
 
