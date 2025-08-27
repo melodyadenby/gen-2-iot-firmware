@@ -370,8 +370,8 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
   size_t availableSpace =
       sizeof(state->VIN) - currentLen - 1; // -1 for null terminator
 
-  Serial.printlnf("Port %d - Chunk length: %d, Available space: %d", port,
-                  chunkLen, availableSpace);
+ // Serial.printlnf("Port %d - Chunk length: %d, Available space: %d", port,
+                  //chunkLen, availableSpace);
 
   // Only append if there's space in the VIN buffer
   if (chunkLen <= availableSpace) {
@@ -407,8 +407,8 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
                       port);
     }
   } else {
-    Serial.printlnf("Port %d - PARTIAL VIN: %s (%d/%d chars)", port, state->VIN,
-                    strlen(state->VIN), VIN_LENGTH);
+    // Serial.printlnf("Port %d - PARTIAL VIN: %s (%d/%d chars)", port, state->VIN,
+    //                 strlen(state->VIN), VIN_LENGTH);
   }
   // Serial.printlnf("=== END VIN DEBUG ===");
 }
@@ -532,13 +532,13 @@ void PortEventHandler::handleForceEjectMessage(
 void PortEventHandler::publishStatusToCloud(int port, const char *status, size_t statusSize) {
     char eventName[32];
     snprintf(eventName, sizeof(eventName), "port_%d_status", port);
-    
+
     // Create safe copy with guaranteed null termination
     char safeStatus[256];
     size_t maxCopy = (statusSize > 0 && statusSize < sizeof(safeStatus)) ? statusSize - 1 : sizeof(safeStatus) - 1;
     strncpy(safeStatus, status, maxCopy);
     safeStatus[maxCopy] = '\0';
-    
+
     Particle.publish(eventName, safeStatus, PRIVATE);
 }
 

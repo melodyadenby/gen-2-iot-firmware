@@ -151,20 +151,7 @@ void CANMessageProcessor::parseVINMessage(const uint8_t *payload, size_t length,
     return;
   }
 
-  // Debug: Print raw payload
-  Serial.print("VIN Raw payload: ");
-  for (size_t i = 0; i < length; i++)
-  {
-    Serial.printf("%c", payload[i]);
-  }
-  Serial.println();
 
-  Serial.print("VIN Raw bytes: ");
-  for (size_t i = 0; i < length; i++)
-  {
-    Serial.printf("0x%02X ", payload[i]);
-  }
-  Serial.println();
 
   // Check if payload starts with 'K'
   if (payload[0] != 'K')
@@ -184,7 +171,7 @@ void CANMessageProcessor::parseVINMessage(const uint8_t *payload, size_t length,
   safeExtractString(payload, 1, vinDataLen, parsedMsg.vinData.vin,
                     sizeof(parsedMsg.vinData.vin));
 
-  Serial.printf("Extracted VIN chunk: '%s'\n", parsedMsg.vinData.vin);
+  //Serial.printf("Extracted VIN chunk: '%s'\n", parsedMsg.vinData.vin);
   parsedMsg.isValid = true;
 }
 

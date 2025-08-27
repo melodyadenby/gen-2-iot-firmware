@@ -479,8 +479,6 @@ void handlePortDataRequests() {
 
       lastHighTrafficCheck = current_time;
 
-      Serial.printlnf("VIN Status: %d pending, %d active", pendingVINRequests,
-                      activeVINRequests);
     }
 
     // CONSERVATIVE delay calculation to prevent bus saturation
@@ -520,9 +518,6 @@ void handlePortDataRequests() {
     }
   }
 
-  // If we get here, we can poll
-  Serial.println("TIME TO GET PORT DATA");
-
   // Check if portFlagHandler is available
   if (!portFlagHandler) {
     Serial.printlnf("portFlagHandler not initialized");
@@ -551,18 +546,13 @@ void handlePortDataRequests() {
                         MAX_CONCURRENT_VINS);
         current_poll_port++; // Move to next port
         continue;            // Skip this VIN request
-      } else {
-        Serial.printlnf("isVINRequest: %d", isVINRequest);
-        Serial.printlnf("activeVINRequests: %d", activeVINRequests);
-        Serial.printlnf("MAX_CONCURRENT_VINS: %d", MAX_CONCURRENT_VINS);
       }
 
       // This is the critical part - actually send the port data request
-      Serial.printlnf("Attempting to poll port %d", current_poll_port);
       bool success = portFlagHandler->sendGetPortData(current_poll_port);
 
       if (success) {
-        Serial.printlnf("Successfully polled port %d", current_poll_port);
+        Serial.printlnf("Polled port %d", current_poll_port);
         markPortPolled(current_poll_port);
         // Reset failure count on success
         portFailureCount[current_poll_port] = 0;
@@ -838,7 +828,6 @@ void can_interrupt() {
 
   if (readin == ERROR_OK) {
     // Comprehensive corruption and gibberish filtering
-    Serial.printlnf("Received CAN message %s", recMsg.data);
     // 1. Basic validity checks
     if ((int32_t)recMsg.can_id < 0 || recMsg.can_id == 0 ||
         recMsg.can_id > MAX_PORTS || recMsg.can_dlc > 8) {

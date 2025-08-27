@@ -139,7 +139,7 @@ void PortFlagHandler::handleChargeCommand(int port) {
 
   if (sendPortCommand(port, 'C', variantStr, 2 * PORT_CHECK_INTERVAL) ==
       ERROR_OK) {
-    markPortsUnpolled();
+    //markPortsUnpolled();
     state->send_charge_flag = false;
     state->check_charge_status = true;
   } else {

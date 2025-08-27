@@ -31,7 +31,7 @@ void initializePorts() {
   Serial.printlnf("Initialized %d ports\n", MAX_PORTS);
 }
 void markPortsUnpolled() {
-  Serial.println("TIME TO GET PORT DATA");
+  Serial.println("Marking ports as unpolled");
   for (int port = 1; port <= MAX_PORTS; port++) {
     PortState *state = &ports[port];
     if (state) {
