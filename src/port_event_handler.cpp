@@ -370,8 +370,8 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
   size_t availableSpace =
       sizeof(state->VIN) - currentLen - 1; // -1 for null terminator
 
- // Serial.printlnf("Port %d - Chunk length: %d, Available space: %d", port,
-                  //chunkLen, availableSpace);
+  // Serial.printlnf("Port %d - Chunk length: %d, Available space: %d", port,
+  // chunkLen, availableSpace);
 
   // Only append if there's space in the VIN buffer
   if (chunkLen <= availableSpace) {
@@ -407,7 +407,8 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
                       port);
     }
   } else {
-    // Serial.printlnf("Port %d - PARTIAL VIN: %s (%d/%d chars)", port, state->VIN,
+    // Serial.printlnf("Port %d - PARTIAL VIN: %s (%d/%d chars)", port,
+    // state->VIN,
     //                 strlen(state->VIN), VIN_LENGTH);
   }
   // Serial.printlnf("=== END VIN DEBUG ===");
@@ -500,6 +501,7 @@ void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
       state->charge_successful = true;
       Serial.printlnf("Charge success on port %d, variant: %c", port,
                       message.chargeData.variant);
+      state->check_charge_status = false;
     } else {
       Serial.printlnf(
           "Charge variant mismatch on port %d. Expected: %c, Got: %c", port,
@@ -507,7 +509,6 @@ void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
     }
 
     state->send_charge_flag = false;
-    state->check_charge_status = true;
   }
 }
 
@@ -529,17 +530,20 @@ void PortEventHandler::handleForceEjectMessage(
   publishStatusToCloud(port, buffer, sizeof(buffer));
 }
 
-void PortEventHandler::publishStatusToCloud(int port, const char *status, size_t statusSize) {
-    char eventName[32];
-    snprintf(eventName, sizeof(eventName), "port_%d_status", port);
+void PortEventHandler::publishStatusToCloud(int port, const char *status,
+                                            size_t statusSize) {
+  char eventName[32];
+  snprintf(eventName, sizeof(eventName), "port_%d_status", port);
 
-    // Create safe copy with guaranteed null termination
-    char safeStatus[256];
-    size_t maxCopy = (statusSize > 0 && statusSize < sizeof(safeStatus)) ? statusSize - 1 : sizeof(safeStatus) - 1;
-    strncpy(safeStatus, status, maxCopy);
-    safeStatus[maxCopy] = '\0';
+  // Create safe copy with guaranteed null termination
+  char safeStatus[256];
+  size_t maxCopy = (statusSize > 0 && statusSize < sizeof(safeStatus))
+                       ? statusSize - 1
+                       : sizeof(safeStatus) - 1;
+  strncpy(safeStatus, status, maxCopy);
+  safeStatus[maxCopy] = '\0';
 
-    Particle.publish(eventName, safeStatus, PRIVATE);
+  Particle.publish(eventName, safeStatus, PRIVATE);
 }
 
 void PortEventHandler::resetPortAfterUnlock(int port) {
