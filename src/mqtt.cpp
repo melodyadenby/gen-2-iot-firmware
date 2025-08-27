@@ -35,8 +35,7 @@ unsigned long lastHeartbeatRetryTime = 0;
 // MQTT Health Monitoring Variables
 unsigned long lastMqttMessageReceived = 0;
 unsigned long lastMqttHealthCheck = 0;
-const unsigned long MQTT_MESSAGE_TIMEOUT =
-    3 * HOUR_TO_MS_MULTIPLIER;
+const unsigned long MQTT_MESSAGE_TIMEOUT = 3 * HOUR_TO_MS_MULTIPLIER;
 const unsigned long MQTT_HEALTH_CHECK_INTERVAL =
     60000; // Check every 60 seconds
 bool mqttHealthy = true;
@@ -490,7 +489,14 @@ void processMQTTCommand(char cmd, char variant, int port, char btn,
       Serial.printlnf("Invalid port for emergency exit: %d\n", port);
     }
     break;
-
+  case 'S':
+    if (isValidPort(port) && portState) {
+      portState->send_manual_tag_read_flag = true;
+      Serial.printlnf("Status Tag request for port %d\n", port);
+    } else {
+      Serial.printlnf("Invalid port for status request: %d\n", port);
+    }
+    break;
   case 'P': // Port status request: P,0,<port_start>,<port_end>
     if (tokens[2] && tokens[3]) {
       snprintf(portStatusRequest, sizeof(portStatusRequest), "P,0,%s,%s",

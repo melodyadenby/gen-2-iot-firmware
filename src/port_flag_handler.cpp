@@ -43,6 +43,7 @@ void PortFlagHandler::processPortFlags(int port) {
   handleChargeCommand(port);
   handleHeartbeat(port);
   handleTemperatureRequest(port);
+  handleManualTagRead(port);
   handleChargingParameters(port);
   handlePortVersionRequest(port);
   handleVINToCloud(port);
@@ -175,6 +176,21 @@ void PortFlagHandler::handleTemperatureRequest(int port) {
     state->send_temp_req_flag = false;
   } else {
     handleCommandError(port, "TEMPERATURE", -1);
+  }
+}
+void PortFlagHandler::handleManualTagRead(int port) {
+  PortState *state = getPortState(port);
+  if (!state || !state->send_manual_tag_read_flag) {
+    return;
+  }
+
+  logFlagActivity(port, "TAG STATUS", "Requesting Tag data");
+  Serial.printlnf("Status Tag request for port %d\n", port);
+  if (sendPortCommand(port, 'S', "0", 10 * SEC_TO_MS_MULTIPLIER) == ERROR_OK) {
+    Serial.println("Tag data requested successfully");
+    state->send_manual_tag_read_flag = false;
+  } else {
+    handleCommandError(port, "TAG STATUS", -1);
   }
 }
 
@@ -503,7 +519,8 @@ bool PortFlagHandler::hasPortPendingFlags(int port) {
 
   return (state->vin_request_flag || state->send_unlock_flag ||
           state->send_charge_flag || state->send_port_heartbeat ||
-          state->send_temp_req_flag || state->send_charging_params_flag ||
+          state->send_temp_req_flag || state->send_manual_tag_read_flag ||
+          state->send_charging_params_flag ||
           state->send_port_build_version_flag || state->emergency_exit_flag ||
           state->send_vin_to_cloud_flag || state->send_button_state_flag ||
           state->check_unlock_status || state->check_charge_status ||
