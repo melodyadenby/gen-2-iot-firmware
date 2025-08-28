@@ -9,7 +9,7 @@
 #define MQTT_USR "sspitler"
 #define MQTT_PWD "testpass"
 #define MQTT_PORT 1883
-#define KEEP_ALIVE 120 // seconds
+#define KEEP_ALIVE 20 // seconds
 #define MQTT_MAX_PACKET_SIZE 300
 
 // MQTT Connection State
