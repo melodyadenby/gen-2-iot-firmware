@@ -104,7 +104,10 @@ void checkMQTTStat() {
   // Attempt reconnection after timeout, but respect retry intervals
   if (current_time - mqtt_disconnected_timer >= MQTT_DISCONNECTED_TIMEOUT) {
     // Only call attemptReconnect if enough time has passed since last attempt
-    if (current_time - lastRetryTime >= currentRetryInterval) {
+    if (!CELLULAR_CONNECTED) {
+      Serial.println(
+          "Cellular not connected, will try to reconnect MQTT later");
+    } else if (current_time - lastRetryTime >= currentRetryInterval) {
       attemptReconnect();
     }
   }
@@ -118,7 +121,14 @@ void checkMQTTHealth() {
     return;
   }
   lastMqttHealthCheck = currentTime;
-
+  if (RESET_BROKER_FLAG) {
+    Serial.printlnf("MQTT unhealthy - internet connection lost");
+    mqttHealthy = false;
+    // Force reconnection
+    client.disconnect();
+    BROKER_CONNECTED = false;
+    mqtt_disconnect_noted = false;
+  }
   // Check if we haven't received messages in too long
   if (BROKER_CONNECTED && lastMqttMessageReceived > 0) {
     unsigned long timeSinceLastMessage = currentTime - lastMqttMessageReceived;
@@ -160,6 +170,7 @@ void resetRetryLogic() {
   mqtt_disconnect_noted = false;
   currentRetryInterval = RETRY_INTERVAL_MS; // Reset to initial retry interval
   lastRetryTime = millis();                 // Reset the timer to current time
+  RESET_BROKER_FLAG = false;
 }
 
 void increaseRetryInterval() {

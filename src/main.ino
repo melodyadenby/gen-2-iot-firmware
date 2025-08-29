@@ -25,6 +25,7 @@ PRODUCT_VERSION(PRODUCT_VERSION_NUM);
 char can_err_msg[200];
 bool CAN_ERROR = false;
 bool CELLULAR_CONNECTED = false;
+bool RESET_BROKER_FLAG = false;
 
 // Architecture components
 PortEventHandler *portEventHandler = nullptr;
@@ -478,7 +479,6 @@ void handlePortDataRequests() {
       g_activeVINRequests = activeVINRequests;
 
       lastHighTrafficCheck = current_time;
-
     }
 
     // CONSERVATIVE delay calculation to prevent bus saturation
@@ -1258,6 +1258,7 @@ void internetCheckThread() {
   static unsigned long disconnectTime = 0;
   static unsigned long lastCheckTime = 0;
   static bool calledConnect = false;
+  static bool local_reset_broker_flag = false;
   while (true) {
     // Non-blocking check every 5 seconds
     if (millis() - lastCheckTime > 5000) {
@@ -1275,6 +1276,11 @@ void internetCheckThread() {
           Particle.connect();
           calledConnect = true;
         }
+        if (!local_reset_broker_flag && disconnectedDuration > 5000 &&
+            calledConnect) {
+          RESET_BROKER_FLAG = true; //only set to false again by mqtt.cpp
+          local_reset_broker_flag =true;
+        }
         // Hard reset after 1 minute
         if (disconnectedDuration > INTERNET_DISCONNECT_RESET_TIMEOUT) {
 
@@ -1289,6 +1295,7 @@ void internetCheckThread() {
           Serial.printlnf("Internet reconnected after %lu ms offline",
                           millis() - disconnectTime);
         }
+        local_reset_broker_flag = false;
         disconnectTime = 0;
         did_disconnect = false;
         calledConnect = false;
