@@ -270,6 +270,7 @@ void initializeParticle() {
   Particle.function("resetDevice", resetDevice);
   Particle.function("getPortVin", forceGetVin);
   Particle.function("getPortStatus", forceGetPortStatus);
+  Particle.function("juise-message", juiceMessageCallback);
 
   Particle.variable("CAN_ERROR", CAN_ERROR);
   Particle.variable("pub_id", MANUAL_MODE, STRING);
@@ -293,7 +294,7 @@ void initializeParticle() {
 
   // Wait for connection with timeout
   setLightRed();
-  waitFor(Particle.connected, 60000);
+  waitFor(Particle.connected, 120000);
   if (!Particle.connected()) {
     Serial.printlnf("Failed to connect to Particle Cloud");
     resetDevice("");

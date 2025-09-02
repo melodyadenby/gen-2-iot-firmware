@@ -61,6 +61,8 @@ bool connect_broker();
 void sub_topic_and_alert();
 void publishCloud(String message);
 void mqtt_callback(char *topic, byte *payload, unsigned int length);
+
+int juiceMessageCallback(String payload);
 void processMQTTCommand(char cmd, char variant, int port, char btn,
                         char *tokens[]);
 void initializeMQTT();

@@ -286,6 +286,47 @@ void publishCloud(String message) {
   }
 }
 
+int juiceMessageCallback(String payload) {
+  Serial.printlnf("Juice message received: %s", payload.c_str());
+
+
+  // Convert String to char array for parsing
+  int length = payload.length();
+  char p[length + 1];
+  payload.toCharArray(p, length + 1);
+
+  // Parse the message by comma delimiter
+  char *token;
+  char *rest = p;
+  char *tokens[4] = {NULL}; // Store up to 4 tokens (cmd, variant, port, btn)
+  int i = 0;
+
+  // Split the string by commas
+  while ((token = strtok_r(rest, ",", &rest)) && i < 4) {
+    tokens[i++] = token;
+  }
+
+  // Extract command from first token
+  char cmd = tokens[0] ? tokens[0][0] : '\0';
+
+  // Extract variant from second token if available
+  char variant = tokens[1] ? tokens[1][0] : '\0';
+
+  // Extract port from third token if available
+  int port = 0;
+  if (tokens[2]) {
+    port = atoi(tokens[2]);
+    Serial.printlnf("Parsed port number: %d\n", port);
+  }
+
+  // Extract button state from fourth token if available
+  char btn = tokens[3] ? (tokens[3][0] == '0' ? '1' : '0') : '2';
+
+  // Process commands
+  processMQTTCommand(cmd, variant, port, btn, tokens);
+  return 1;
+}
+
 void mqtt_callback(char *topic, byte *payload, unsigned int length) {
   char p[length + 1];
   memcpy(p, payload, length);
