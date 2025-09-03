@@ -23,21 +23,25 @@ const int HOUR_TO_MS_MULTIPLIER = 60 * MIN_TO_MS_MULTIPLIER;
 
 // Environment-specific Configuration
 #if ENV == ENV_QA
-#define MQTT_URL "qa-hub-mqtt-broker-config.kuhmute.net"
 #define PARTICLE_CREDENTIALS_SUBSCRIBE "hook-response/qa-credentials"
 #define PARTICLE_CREDENTIALS "qa-credentials"
+#define JUISE_INCOMING "juise-message"
+#define JUISE_OUTGOING "juise-outgoing"
 #elif ENV == ENV_PROD
-#define MQTT_URL "hub-mqtt-broker-config.kuhmute.net"
 #define PARTICLE_CREDENTIALS_SUBSCRIBE "hook-response/credentials"
 #define PARTICLE_CREDENTIALS "credentials"
+#define JUISE_INCOMING "juise-message"
+#define JUISE_OUTGOING "juise-outgoing"
 #elif ENV == ENV_LOCAL
-#define MQTT_URL "mqtt://198.111.63.104:1883"
 #define PARTICLE_CREDENTIALS_SUBSCRIBE "hook-response/qa-credentials"
 #define PARTICLE_CREDENTIALS "qa-credentials"
+#define JUISE_INCOMING "juise-message"
+#define JUISE_OUTGOING "juise-outgoing"
 #else
-#define MQTT_URL "dev-hub-mqtt-broker-config.kuhmute.net"
 #define PARTICLE_CREDENTIALS_SUBSCRIBE "hook-response/credentials"
 #define PARTICLE_CREDENTIALS "credentials"
+#define JUISE_INCOMING "juise-message"
+#define JUISE_OUTGOING "juise-outgoing"
 #endif
 
 // System Configuration

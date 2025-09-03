@@ -1,6 +1,6 @@
 #include "port_flag_handler.h"
 #include "can.h"
-#include "mqtt.h"
+#include "cloud.h"
 #include "port_event_handler.h"
 #include "port_state.h"
 #include "utils.h"
@@ -338,6 +338,7 @@ void PortFlagHandler::checkHeartbeatStatus(int port) {
     formatCloudMessage("H", "0", port, "1", buffer, sizeof(buffer));
     publishToCloud(buffer);
 
+
     state->check_heartbeat_status = false;
     state->heartbeat_success = false;
   } else if (state->command_timeout <= 0) {
@@ -466,12 +467,7 @@ int PortFlagHandler::sendChargingParams(int port, const char *volts,
 }
 
 void PortFlagHandler::publishToCloud(const char *message) {
-  if (isMQTTConnected()) {
-    publishCloud(String(message));
-  } else {
-    // Fallback to Particle cloud
-    Particle.publish("port_status", message, PRIVATE);
-  }
+  publishJuiseMessage(message);
 }
 
 void PortFlagHandler::resetPortAfterOperation(int port) {

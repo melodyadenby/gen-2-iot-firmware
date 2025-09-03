@@ -6,7 +6,7 @@
 #include "config.h"
 #include "credentials.h"
 #include "logging.h"
-#include "mqtt.h"
+#include "cloud.h"
 // Global credential variables
 char deviceIdBuf[100];
 bool credentialsFetched = false;
@@ -78,19 +78,12 @@ void getIotCredentials(const char *event, const char *data) {
     // Copy values to global variables
     strncpy(MANUAL_MODE, iotCreds.pubId, sizeof(MANUAL_MODE) - 1);
     MANUAL_MODE[sizeof(MANUAL_MODE) - 1] = '\0'; // Ensure null-terminated
-    strncpy(MQTT_CLIENT_ID, Particle.deviceID(), sizeof(MQTT_CLIENT_ID) - 1);
-    MQTT_CLIENT_ID[sizeof(MQTT_CLIENT_ID) - 1] = '\0'; // Ensure null-terminated
 
     Serial.printlnf("Credentials successfully fetched and validated");
     Serial.printlnf("PubId: %s", iotCreds.pubId.c_str());
-    Serial.printlnf("MQTT User: %s", iotCreds.particleId.c_str());
     Serial.printlnf("Hub UUID: %s", iotCreds.hub_uuid.c_str());
     Particle.unsubscribe();
-    build_topics(MQTT_USR);
     credentialsFetched = true;
-    if (!connect_mqtt()) {
-      Serial.println("Error: connect_mqtt");
-    }
   } else {
     Serial.println("Invalid credentials received");
     credentialsFetched = false;

@@ -9,13 +9,12 @@
 #include "lights.h"
 #include "logging.h"
 #include "main.h"
-#include "mqtt.h"
+#include "cloud.h"
 #include "port_event_handler.h"
 #include "port_flag_handler.h"
 #include "port_state.h"
 #include "utils.h"
 #include <ArduinoJson.h>
-#include <MQTT.h>
 #include <SPI.h>
 
 // Product version setup
@@ -164,7 +163,6 @@ void setup() {
 void loop() {
   ApplicationWatchdog::checkin(); // Feed hardware watchdog
   DeviceInfoLedger::instance().loop();
-  handleMQTTClientLoop();
 
   static unsigned long lastLoopTime = 0;
   unsigned long currentTime = millis();
@@ -202,7 +200,6 @@ void initializeSystem() {
   // Initialize all subsystems
   initializePorts();
   initializeCredentials();
-  initializeMQTT();
   initializeLedger();
 
   Serial.printlnf("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
@@ -270,11 +267,10 @@ void initializeParticle() {
   Particle.function("resetDevice", resetDevice);
   Particle.function("getPortVin", forceGetVin);
   Particle.function("getPortStatus", forceGetPortStatus);
-  Particle.function("juise-message", juiceMessageCallback);
+  Particle.function(JUISE_INCOMING, juiceMessageCallback);
 
   Particle.variable("CAN_ERROR", CAN_ERROR);
   Particle.variable("pub_id", MANUAL_MODE, STRING);
-  Particle.variable("MQTT_connected", BROKER_CONNECTED);
   Particle.variable("credentialsFetched", credentialsFetched);
   Particle.variable("total_messages_received", total_messages_received);
 
@@ -336,8 +332,6 @@ void handleSystemLoop() {
     return;
   }
 
-  // Handle MQTT and credentials first
-  handleMQTT();
   handleCredentials();
   updateSystemStatus();
 
@@ -670,10 +664,10 @@ void handleCredentials() {
 }
 
 void updateSystemStatus() {
-  if (areCredentialsValid() && isMQTTConnected()) {
+  if (areCredentialsValid() && CELLULAR_CONNECTED) {
     setLightGreen(); // All systems operational
 
-    // Set the just connected flag when we first get valid credentials and MQTT
+    // Set the just connected flag when we first get valid credentials and Internet connected
     // connection
     static bool wasConnectedBefore = false;
     if (!wasConnectedBefore) {
@@ -683,7 +677,7 @@ void updateSystemStatus() {
                       "polling enabled");
     }
   } else if (areCredentialsValid()) {
-    setLightPurple(); // Have credentials, connecting to MQTT
+    setLightPurple(); // Have credentials, connecting to Cloud
   } else {
     setLightBlue(); // Fetching credentials
   }
@@ -697,7 +691,7 @@ void canThread() {
   Serial.printlnf("CAN processing thread started");
 
   while (true) {
-    if (areCredentialsValid() && isMQTTConnected() && Particle.connected() &&
+    if (areCredentialsValid() && CELLULAR_CONNECTED &&
         !CAN_ERROR && !can_recovery_needed) {
       // Process incoming CAN messages
       handleCanQueue();
@@ -714,7 +708,7 @@ void canThread() {
 
 void port_request_thread() {
   while (true) {
-    if (areCredentialsValid() && isMQTTConnected() && Particle.connected() &&
+    if (areCredentialsValid() && CELLULAR_CONNECTED &&
         !CAN_ERROR && !can_recovery_needed) {
       handlePortDataRequests();
 
@@ -1136,15 +1130,11 @@ int resetDevice(String command) {
     Serial.printlnf("Device reset requested. Reason: %s", command.c_str());
     Serial.printlnf("Free memory before reset: %lu bytes", System.freeMemory());
     Serial.printlnf("System uptime: %lu ms", millis());
-    Serial.printlnf("MQTT connected: %s", isMQTTConnected() ? "yes" : "no");
+    Serial.printlnf("Cellular connected: %s", CELLULAR_CONNECTED ? "yes" : "no");
     Serial.printlnf("Credentials valid: %s",
                     areCredentialsValid() ? "yes" : "no");
     Serial.printlnf("CAN errors in last period: %d", can_error_count);
   }
-  // if (isMQTTConnected()) {
-  //   Serial.printlnf("Closing MQTT connection...");
-  //   //disconnectMQTT();
-  // }
   System.reset();
   return 1;
 }
@@ -1217,19 +1207,13 @@ void checkSystemHealth() {
   if (uptime - lastHealthCheck > 60000) {
     Serial.printlnf("System Health - Uptime: %lu ms, Free Memory: %lu bytes",
                     uptime, freeMemory);
-    Serial.printlnf("MQTT Status: %s", getMQTTStatus().c_str());
-    Serial.printlnf("MQTT Healthy: %s", isMQTTHealthy() ? "yes" : "no");
-    Serial.printlnf("MQTT Fail Count: %d", getMQTTFailCount());
+    Serial.printlnf("Celluar Status: %s", CELLULAR_CONNECTED);
     Serial.printlnf("Credentials: %s", getCredentialsStatus().c_str());
     Serial.printlnf("CAN Errors (last minute): %d", can_error_count);
     Serial.printlnf("CAN Recovery needed: %s",
                     can_recovery_needed ? "yes" : "no");
 
-    // Force MQTT reconnection if unhealthy
-    if (BROKER_CONNECTED && !isMQTTHealthy()) {
-      Serial.println("MQTT unhealthy despite connection - forcing reconnect");
-      forceMQTTReconnect();
-    }
+
 
     if (portFlagHandler) {
       Serial.printlnf("Ports with pending flags: %d",
@@ -1488,7 +1472,7 @@ void checkInterruptHealth() {
   lastInterruptCheck = currentTime;
 
   // Only check interrupt health when system is fully operational
-  if (!Particle.connected() || !BROKER_CONNECTED || !areCredentialsValid()) {
+  if (!Particle.connected() ||  !areCredentialsValid()) {
     // System not ready - don't monitor interrupts yet
     static bool wasReady = false;
     if (wasReady) {
@@ -1599,7 +1583,7 @@ void checkTransmissionReceptionBalance() {
   unsigned long currentTime = millis();
 
   // Only check TX/RX balance when system is fully operational
-  if (!CELLULAR_CONNECTED || !BROKER_CONNECTED || !areCredentialsValid()) {
+  if (!CELLULAR_CONNECTED ||  !areCredentialsValid()) {
     // System not ready - reset timers to prevent false alarms
     static bool txRxWasReady = false;
     if (txRxWasReady) {

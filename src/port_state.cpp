@@ -1,7 +1,7 @@
 #include "port_state.h"
 #include "Particle.h"
 #include "config.h"
-#include "mqtt.h"
+#include "cloud.h"
 #include "utils.h"
 
 // Global port state variables
