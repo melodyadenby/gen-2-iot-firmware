@@ -1422,6 +1422,16 @@ void canHealthMonitorThread() {
                         "clear: %lu ms ago)",
                         canErrorMonitor.rxOverflowCount, overflowDuration,
                         currentTime - canErrorMonitor.lastRxOverflowClear);
+
+        // Reset overflow tracking after successful recovery (if no overflow for 10 seconds and system is healthy)
+        if (currentTime - canErrorMonitor.lastRxOverflowClear > 10000 &&
+            canErrorMonitor.consecutiveErrors == 0) {
+          Serial.printlnf(
+              "RX overflow resolved - resetting tracking (was %d overflows)",
+              canErrorMonitor.rxOverflowCount);
+          canErrorMonitor.rxOverflowCount = 0;
+          canErrorMonitor.firstRxOverflowTime = 0;
+        }
       }
 
       // Check for invalid CAN messages (indicates controller corruption)
@@ -1471,7 +1481,14 @@ void checkInterruptHealth() {
   }
   lastInterruptCheck = currentTime;
 
-  // Only check interrupt health when system is fully operational
+  // Check for RX overflow first
+  uint8_t errorFlags = getCANErrorFlags(false);
+  if (errorFlags & 0x40) { // RX0OVR flag
+    handleRxOverflowWithEscalation(currentTime);
+    return;
+  }
+
+  // Only check other interrupt health when system is fully operational
   if (!Particle.connected() ||  !areCredentialsValid()) {
     // System not ready - don't monitor interrupts yet
     static bool wasReady = false;
@@ -1581,6 +1598,13 @@ void recoverInterruptSystem() {
 
 void checkTransmissionReceptionBalance() {
   unsigned long currentTime = millis();
+
+  // Check for RX overflow first - handle regardless of connectivity status
+  uint8_t errorFlags = getCANErrorFlags(false);
+  if (errorFlags & 0x40) { // RX0OVR flag
+    handleRxOverflowWithEscalation(currentTime);
+    return;
+  }
 
   // Only check TX/RX balance when system is fully operational
   if (!CELLULAR_CONNECTED ||  !areCredentialsValid()) {
@@ -1698,14 +1722,5 @@ void handleRxOverflowWithEscalation(unsigned long currentTime) {
     }
   }
 
-  // Reset overflow tracking after successful clear (if no overflow for 10
-  // seconds)
-  if (canErrorMonitor.rxOverflowCount > 0 &&
-      currentTime - canErrorMonitor.lastRxOverflowClear > 10000) {
-    Serial.printlnf(
-        "RX overflow resolved - resetting tracking (was %d overflows)",
-        canErrorMonitor.rxOverflowCount);
-    canErrorMonitor.rxOverflowCount = 0;
-    canErrorMonitor.firstRxOverflowTime = 0;
-  }
+
 }
