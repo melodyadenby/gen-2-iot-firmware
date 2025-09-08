@@ -24,7 +24,7 @@ class PortFlagHandler;
 #define CAN_INT A4
 extern char can_err_msg[200];
 extern bool CAN_ERROR;
-#define CAN_QUEUE_SIZE 64            // Increased buffer size to reduce overflow chance
+#define CAN_QUEUE_SIZE 100           // Increased buffer size to handle poor network conditions
 #define CAN_MAX_CONSECUTIVE_ERRORS 3 // Number of errors before controller reset
 
 // CAN message queue variables (defined in main.ino)
@@ -32,7 +32,7 @@ extern volatile bool queueOverflow;
 extern volatile int messageCount;
 extern volatile int queueHead;
 extern volatile int queueTail;
-extern can_frame messageQueue[50];
+extern can_frame messageQueue[CAN_QUEUE_SIZE];
 
 // Architecture Components
 extern PortEventHandler *portEventHandler;

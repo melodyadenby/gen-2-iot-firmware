@@ -101,7 +101,7 @@ struct CANErrorMonitor {
   unsigned long lastRxOverflowClear;
 } canErrorMonitor = {0, 0, 0, 0, false, 0, 0, 0, false, 0, 0, 0, 0};
 
-can_frame messageQueue[50];
+can_frame messageQueue[CAN_QUEUE_SIZE];  // Increased from 50 to 100
 
 // Interrupt monitoring variables
 unsigned long lastInterruptTime = 0;
@@ -365,7 +365,8 @@ void handlePortDataRequests() {
 
   // EMERGENCY STOP - Don't poll if we're in error cascade
   if (can_recovery_needed || CAN_ERROR) {
-    polling_cycle_active = false;
+    polling_cycle_active = false;  // CRITICAL: Must reset this to prevent deadlock
+    current_poll_port = 1;  // Reset port counter
     markPortsUnpolled();
     delay(100); // Prevent tight loop during recovery
     return;
@@ -753,7 +754,13 @@ void port_request_thread() {
 
 void handleCanQueue() {
   int messagesProcessed = 0;
-  const int MAX_MESSAGES_PER_LOOP = 8;
+  int MAX_MESSAGES_PER_LOOP = 8;
+  
+  // If queue is critically full, process more aggressively
+  if (messageCount > (CAN_QUEUE_SIZE * 3 / 4)) {  // More than 75% full
+    MAX_MESSAGES_PER_LOOP = 20;
+    Serial.printlnf("CAN queue critical (%d messages) - aggressive processing", messageCount);
+  }
 
   while (messageCount > 0 && messagesProcessed < MAX_MESSAGES_PER_LOOP) {
     can_frame msg;
@@ -762,15 +769,15 @@ void handleCanQueue() {
     // Thread-safe message extraction
     noInterrupts();
     if (messageCount > 0) {
-      if (queueHead >= 0 && queueHead < 50 && queueTail >= 0 &&
-          queueTail < 50) {
+      if (queueHead >= 0 && queueHead < CAN_QUEUE_SIZE && queueTail >= 0 &&
+          queueTail < CAN_QUEUE_SIZE) {
         msg = messageQueue[queueHead];
-        queueHead = (queueHead + 1) % 50;
+        queueHead = (queueHead + 1) % CAN_QUEUE_SIZE;
         messageCount--;
         validMessage = true;
 
         // Handle queue overflow reset
-        if (queueOverflow && messageCount < 25) {
+        if (queueOverflow && messageCount < (CAN_QUEUE_SIZE / 2)) {
           queueOverflow = false;
           Serial.println("Queue overflow cleared");
         }
@@ -897,14 +904,25 @@ void can_interrupt() {
     }
 
     // Add to queue if there's space
-    if (messageCount < 50) {
+    if (messageCount < CAN_QUEUE_SIZE) {
       incrementMessageCounter();
       messageQueue[queueTail] = recMsg;
-      queueTail = (queueTail + 1) % 50;
+      queueTail = (queueTail + 1) % CAN_QUEUE_SIZE;
       messageCount++;
     } else {
       queueOverflow = true;
       logCANError(-2, "queue_overflow");
+      
+      // Emergency queue clear if severely overflowing
+      static unsigned long lastEmergencyClear = 0;
+      if (millis() - lastEmergencyClear > 5000) {  // Only once per 5 seconds
+        Serial.println("EMERGENCY: Clearing oldest 25% of queue to prevent lockup");
+        // Clear oldest 25% of messages
+        int toClear = messageCount / 4;
+        queueHead = (queueHead + toClear) % CAN_QUEUE_SIZE;
+        messageCount -= toClear;
+        lastEmergencyClear = millis();
+      }
     }
   } else {
     // Log read errors (but not every single one to avoid spam)
@@ -927,6 +945,7 @@ void performCANRecovery() {
   // Stop ALL CAN operations immediately
   CAN_ERROR = true;
   can_recovery_needed = false; // Clear the flag first
+  polling_cycle_active = false; // Reset polling state during recovery
 
   // Clear all queues and reset state
   noInterrupts();
@@ -1436,6 +1455,33 @@ void canHealthMonitorThread() {
         Serial.println("CAN message queue overflow detected");
         queueOverflow = false; // Reset flag
         logCANError(-3, "persistent_queue_overflow");
+      }
+      
+      // Periodic queue health check
+      if (messageCount > (CAN_QUEUE_SIZE * 2 / 3)) {  // More than 66% full
+        Serial.printlnf("WARNING: CAN queue filling up (%d/%d messages)", messageCount, CAN_QUEUE_SIZE);
+        
+        // If queue is critically full and not being processed, force clear old messages
+        static unsigned long lastQueueStuckTime = 0;
+        static int lastQueueCount = 0;
+        
+        if (messageCount == lastQueueCount && messageCount > (CAN_QUEUE_SIZE * 4 / 5)) {
+          // Queue hasn't changed and is >80% full - might be stuck
+          if (lastQueueStuckTime == 0) {
+            lastQueueStuckTime = currentTime;
+          } else if (currentTime - lastQueueStuckTime > 3000) {  // Stuck for 3 seconds
+            Serial.printlnf("CRITICAL: Queue stuck at %d messages for 3s - clearing oldest 30%%", messageCount);
+            noInterrupts();
+            int toClear = messageCount * 3 / 10;  // Clear 30%
+            queueHead = (queueHead + toClear) % CAN_QUEUE_SIZE;
+            messageCount -= toClear;
+            interrupts();
+            lastQueueStuckTime = 0;
+          }
+        } else {
+          lastQueueStuckTime = 0;  // Reset if queue is moving
+        }
+        lastQueueCount = messageCount;
       }
 
       // Report RX overflow statistics if any have occurred
