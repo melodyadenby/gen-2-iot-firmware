@@ -554,7 +554,6 @@ void PortEventHandler::resetPortAfterUnlock(int port) {
     state->unlock_successful = false;
     state->send_vin_to_cloud_flag = false;
     state->send_vin_request_timer = 0;
-    state->DID_PORT_CHECK = false;
     state->vin_request_flag = false;
 
     // Clear VIN and charge variant only on unlock (vehicle leaving)
@@ -570,7 +569,6 @@ void PortEventHandler::resetPortAfterCharge(int port) {
   if (state) {
     state->check_charge_status = false;
     state->charge_successful = false;
-    state->DID_PORT_CHECK = false;
     state->charge_varient = '\0';
   }
 }
@@ -587,8 +585,6 @@ void PortEventHandler::handleCommandTimeout(int port, const char *commandType) {
   // Reset relevant flags
   PortState *state = getPortState(port);
   if (state) {
-    state->DID_PORT_CHECK = false;
-
     if (strcmp(commandType, "unlock") == 0) {
       state->check_unlock_status = false;
     } else if (strcmp(commandType, "charge") == 0) {

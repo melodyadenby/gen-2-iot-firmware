@@ -406,7 +406,6 @@ void PortFlagHandler::handleUnlockFailure(int port) {
   // Reset all unlock-related flags
   state->check_unlock_status = false;
   state->unlock_retry_count = 0;
-  state->DID_PORT_CHECK = false;
 }
 
 void PortFlagHandler::handleChargeSuccess(int port) {
@@ -422,7 +421,6 @@ void PortFlagHandler::handleChargeSuccess(int port) {
 
     state->check_charge_status = false;
     state->charge_successful = false;
-    state->DID_PORT_CHECK = false;
     state->charge_varient = '\0';
   }
 }
@@ -440,7 +438,6 @@ void PortFlagHandler::handleChargeFailure(int port) {
 
     state->check_charge_status = false;
     state->charge_successful = false;
-    state->DID_PORT_CHECK = false;
     state->charge_varient = '\0';
   }
 }
@@ -478,7 +475,6 @@ void PortFlagHandler::resetPortAfterOperation(int port) {
     state->unlock_successful = false;
     state->send_vin_to_cloud_flag = false;
     state->send_vin_request_timer = 0;
-    state->DID_PORT_CHECK = false;
     state->vin_request_flag = false;
 
     // Clear VIN cloud response state
