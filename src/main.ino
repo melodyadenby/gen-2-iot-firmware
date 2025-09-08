@@ -3,13 +3,13 @@
 #include "Particle.h"
 #include "can.h"
 #include "can_processor.h"
+#include "cloud.h"
 #include "config.h"
 #include "credentials.h"
 #include "fixes/json_compat.h"
 #include "lights.h"
 #include "logging.h"
 #include "main.h"
-#include "cloud.h"
 #include "port_event_handler.h"
 #include "port_flag_handler.h"
 #include "port_state.h"
@@ -365,6 +365,8 @@ void handlePortDataRequests() {
 
   // EMERGENCY STOP - Don't poll if we're in error cascade
   if (can_recovery_needed || CAN_ERROR) {
+    polling_cycle_active = false;
+    markPortsUnpolled();
     delay(100); // Prevent tight loop during recovery
     return;
   }
@@ -667,8 +669,8 @@ void updateSystemStatus() {
   if (areCredentialsValid() && CELLULAR_CONNECTED) {
     setLightGreen(); // All systems operational
 
-    // Set the just connected flag when we first get valid credentials and Internet connected
-    // connection
+    // Set the just connected flag when we first get valid credentials and
+    // Internet connected connection
     static bool wasConnectedBefore = false;
     if (!wasConnectedBefore) {
       justConnectedFlag = true;
@@ -691,8 +693,8 @@ void canThread() {
   Serial.printlnf("CAN processing thread started");
 
   while (true) {
-    if (areCredentialsValid() && CELLULAR_CONNECTED &&
-        !CAN_ERROR && !can_recovery_needed) {
+    if (areCredentialsValid() && CELLULAR_CONNECTED && !CAN_ERROR &&
+        !can_recovery_needed) {
       // Process incoming CAN messages
       handleCanQueue();
 
@@ -708,8 +710,8 @@ void canThread() {
 
 void port_request_thread() {
   while (true) {
-    if (areCredentialsValid() && CELLULAR_CONNECTED &&
-        !CAN_ERROR && !can_recovery_needed) {
+    if (areCredentialsValid() && CELLULAR_CONNECTED && !CAN_ERROR &&
+        !can_recovery_needed) {
       handlePortDataRequests();
 
       // Shorter delay to allow staggered polling to work properly
@@ -1130,7 +1132,8 @@ int resetDevice(String command) {
     Serial.printlnf("Device reset requested. Reason: %s", command.c_str());
     Serial.printlnf("Free memory before reset: %lu bytes", System.freeMemory());
     Serial.printlnf("System uptime: %lu ms", millis());
-    Serial.printlnf("Cellular connected: %s", CELLULAR_CONNECTED ? "yes" : "no");
+    Serial.printlnf("Cellular connected: %s",
+                    CELLULAR_CONNECTED ? "yes" : "no");
     Serial.printlnf("Credentials valid: %s",
                     areCredentialsValid() ? "yes" : "no");
     Serial.printlnf("CAN errors in last period: %d", can_error_count);
@@ -1213,8 +1216,6 @@ void checkSystemHealth() {
     Serial.printlnf("CAN Recovery needed: %s",
                     can_recovery_needed ? "yes" : "no");
 
-
-
     if (portFlagHandler) {
       Serial.printlnf("Ports with pending flags: %d",
                       portFlagHandler->getPendingPortsCount());
@@ -1243,7 +1244,6 @@ void internetCheckThread() {
   static unsigned long disconnectTime = 0;
   static unsigned long lastCheckTime = 0;
   static bool calledConnect = false;
-  static bool local_reset_broker_flag = false;
   while (true) {
     // Non-blocking check every 5 seconds
     if (millis() - lastCheckTime > 5000) {
@@ -1253,26 +1253,24 @@ void internetCheckThread() {
       CELLULAR_CONNECTED = (Cellular.ready() && Particle.connected());
 
       if (!CELLULAR_CONNECTED) {
-        Serial.println("Internet disconnected - starting recovery timeline");
-        did_disconnect = true;
-        disconnectTime = millis();
+        if (!did_disconnect) { // Only set disconnectTime on FIRST disconnect
+          Serial.println("Internet disconnected - starting recovery timeline");
+          did_disconnect = true;
+          disconnectTime = millis();
+        }
         unsigned long disconnectedDuration = millis() - disconnectTime;
-        if (!calledConnect) {
-          Particle.connect();
-          calledConnect = true;
-        }
-        if (!local_reset_broker_flag && disconnectedDuration > 5000 &&
-            calledConnect) {
-          RESET_BROKER_FLAG = true; //only set to false again by mqtt.cpp
-          local_reset_broker_flag =true;
-        }
+
+        // if (!calledConnect) {
+        //   Particle.connect();
+        //   calledConnect = true;
+        // }
         // Hard reset after 1 minute
         if (disconnectedDuration > INTERNET_DISCONNECT_RESET_TIMEOUT) {
 
           Serial.printlnf("RESET: Internet disconnected for %lu ms - "
                           "performing device reset",
                           disconnectedDuration);
-          resetDevice("");
+          System.reset(RESET_NO_WAIT);
         }
       } else {
         if (did_disconnect) {
@@ -1280,10 +1278,9 @@ void internetCheckThread() {
           Serial.printlnf("Internet reconnected after %lu ms offline",
                           millis() - disconnectTime);
         }
-        local_reset_broker_flag = false;
         disconnectTime = 0;
         did_disconnect = false;
-        calledConnect = false;
+        //calledConnect = false;
       }
     } else {
       delay(100);
@@ -1423,7 +1420,8 @@ void canHealthMonitorThread() {
                         canErrorMonitor.rxOverflowCount, overflowDuration,
                         currentTime - canErrorMonitor.lastRxOverflowClear);
 
-        // Reset overflow tracking after successful recovery (if no overflow for 10 seconds and system is healthy)
+        // Reset overflow tracking after successful recovery (if no overflow for
+        // 10 seconds and system is healthy)
         if (currentTime - canErrorMonitor.lastRxOverflowClear > 10000 &&
             canErrorMonitor.consecutiveErrors == 0) {
           Serial.printlnf(
@@ -1489,7 +1487,7 @@ void checkInterruptHealth() {
   }
 
   // Only check other interrupt health when system is fully operational
-  if (!Particle.connected() ||  !areCredentialsValid()) {
+  if (!Particle.connected() || !areCredentialsValid()) {
     // System not ready - don't monitor interrupts yet
     static bool wasReady = false;
     if (wasReady) {
@@ -1607,7 +1605,7 @@ void checkTransmissionReceptionBalance() {
   }
 
   // Only check TX/RX balance when system is fully operational
-  if (!CELLULAR_CONNECTED ||  !areCredentialsValid()) {
+  if (!CELLULAR_CONNECTED || !areCredentialsValid()) {
     // System not ready - reset timers to prevent false alarms
     static bool txRxWasReady = false;
     if (txRxWasReady) {
@@ -1721,6 +1719,4 @@ void handleRxOverflowWithEscalation(unsigned long currentTime) {
       System.reset(RESET_NO_WAIT);
     }
   }
-
-
 }
