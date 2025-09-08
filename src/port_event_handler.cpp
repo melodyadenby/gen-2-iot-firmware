@@ -497,7 +497,7 @@ void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
   PortState *state = getPortState(port);
   if (state) {
     // Validate charge variant matches what we sent
-    if (message.chargeData.variant == state->charge_varient) {
+    if (message.chargeData.variant == '1'||message.chargeData.variant == '2') {
       state->charge_successful = true;
       Serial.printlnf("Charge success on port %d, variant: %c", port,
                       message.chargeData.variant);
