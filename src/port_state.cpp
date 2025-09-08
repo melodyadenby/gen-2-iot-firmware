@@ -33,7 +33,7 @@ void initializePorts() {
 void markPortsUnpolled() {
   Serial.println("Marking ports as unpolled");
   for (int port = 1; port <= MAX_PORTS; port++) {
-    PortState *state = &ports[port];
+    PortState *state = getPortState(port);
     if (state) {
       state->DID_PORT_CHECK = false;
     }

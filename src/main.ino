@@ -353,7 +353,7 @@ void handlePortDataRequests() {
   // Add static variables for timing control
   static unsigned long last_function_run_time = 0;
   static bool first_run = true;
-  static int current_poll_port = 1;
+  static int current_poll_port = 0;  // Don't initialize to 1, will be set when cycle starts
 
   // Only run this function on first call or once per PORT_CHECK_INTERVAL
   unsigned long current_time = millis();
@@ -424,15 +424,19 @@ void handlePortDataRequests() {
     // Only print the message when we're actually resetting
     if (current_time - last_port_check_reset >= PORT_CHECK_INTERVAL) {
       markPortsUnpolled();
-      current_poll_port = 1;
       last_port_check_reset = current_time; // Update the last reset time
       Serial.println("🚨 DID_PORT_CHECK reset for all ports 🚨");
+      
+      // Force start new cycle when ports are reset
+      polling_cycle_active = false;
+      current_poll_port = 0;  // Will be set to 1 when cycle actually starts
     }
 
     // Start a new polling cycle
     if (!polling_cycle_active) {
       polling_cycle_active = true;
-      Serial.println("Starting new polling cycle for all ports");
+      current_poll_port = 1;  // NOW set to port 1 when actually starting
+      Serial.printlnf("Starting new polling cycle for all ports - starting at port %d", current_poll_port);
     }
   }
 
@@ -521,10 +525,23 @@ void handlePortDataRequests() {
     return;
   }
 
+  // Only process port polling when we're in an active cycle
+  if (!polling_cycle_active) {
+    return;  // Don't increment port counter between cycles
+  }
+  
+  // Safety check - if current_poll_port is 0, set it to 1
+  if (current_poll_port == 0) {
+    current_poll_port = 1;
+    Serial.printlnf("WARNING: current_poll_port was 0, resetting to 1");
+  }
+
   // Find next port that needs polling
+  int start_port = current_poll_port;  // Remember where we started
   for (int attempts = 0; attempts < MAX_PORTS; attempts++) {
-    if (current_poll_port > MAX_PORTS) {
-      current_poll_port = 1; // Wrap around
+    // Validate and wrap port number BEFORE using it
+    if (current_poll_port < 1 || current_poll_port > MAX_PORTS) {
+      current_poll_port = 1; // Wrap around or fix invalid port number
     }
 
     if (!hasPortBeenPolled(current_poll_port)) {
@@ -625,12 +642,21 @@ void handlePortDataRequests() {
       }
 
       last_poll_send_time = current_time;
-      current_poll_port++; // Move to next port for next iteration
+      
+      // Move to next port and wrap if needed
+      current_poll_port++;
+      if (current_poll_port > MAX_PORTS) {
+        current_poll_port = 1;
+      }
 
       // Instead of breaking, return to allow delay between ports
       return;
-    } else {
-      current_poll_port++;
+    }
+    
+    // Move to next port when skipping already-polled ports
+    current_poll_port++;
+    if (current_poll_port > MAX_PORTS) {
+      current_poll_port = 1;
     }
   }
 
@@ -647,6 +673,7 @@ void handlePortDataRequests() {
   // If all ports are polled, end the polling cycle
   if (all_ports_polled) {
     polling_cycle_active = false;
+    current_poll_port = 1;  // Reset to port 1 for next cycle
     last_function_run_time = current_time;
     first_run = false;
     Serial.printlnf(
