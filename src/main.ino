@@ -101,7 +101,7 @@ struct CANErrorMonitor {
   unsigned long lastRxOverflowClear;
 } canErrorMonitor = {0, 0, 0, 0, false, 0, 0, 0, false, 0, 0, 0, 0};
 
-can_frame messageQueue[CAN_QUEUE_SIZE];  // Increased from 50 to 100
+can_frame messageQueue[CAN_QUEUE_SIZE]; // Increased from 50 to 100
 
 // Interrupt monitoring variables
 unsigned long lastInterruptTime = 0;
@@ -355,7 +355,8 @@ void handlePortDataRequests() {
   // Add static variables for timing control
   static unsigned long last_function_run_time = 0;
   static bool first_run = true;
-  static int current_poll_port = 0;  // Don't initialize to 1, will be set when cycle starts
+  static int current_poll_port =
+      0; // Don't initialize to 1, will be set when cycle starts
 
   // Only run this function on first call or once per PORT_CHECK_INTERVAL
   unsigned long current_time = millis();
@@ -367,8 +368,9 @@ void handlePortDataRequests() {
 
   // EMERGENCY STOP - Don't poll if we're in error cascade
   if (can_recovery_needed || CAN_ERROR) {
-    polling_cycle_active = false;  // CRITICAL: Must reset this to prevent deadlock
-    current_poll_port = 1;  // Reset port counter
+    polling_cycle_active =
+        false;             // CRITICAL: Must reset this to prevent deadlock
+    current_poll_port = 1; // Reset port counter
     markPortsUnpolled();
     delay(100); // Prevent tight loop during recovery
     return;
@@ -429,17 +431,19 @@ void handlePortDataRequests() {
       markPortsUnpolled();
       last_port_check_reset = current_time; // Update the last reset time
       Serial.println("🚨 DID_PORT_CHECK reset for all ports 🚨");
-      
+
       // Force start new cycle when ports are reset
       polling_cycle_active = false;
-      current_poll_port = 0;  // Will be set to 1 when cycle actually starts
+      current_poll_port = 0; // Will be set to 1 when cycle actually starts
     }
 
     // Start a new polling cycle
     if (!polling_cycle_active) {
       polling_cycle_active = true;
-      current_poll_port = 1;  // NOW set to port 1 when actually starting
-      Serial.printlnf("Starting new polling cycle for all ports - starting at port %d", current_poll_port);
+      current_poll_port = 1; // NOW set to port 1 when actually starting
+      Serial.printlnf(
+          "Starting new polling cycle for all ports - starting at port %d",
+          current_poll_port);
     }
   }
 
@@ -530,9 +534,9 @@ void handlePortDataRequests() {
 
   // Only process port polling when we're in an active cycle
   if (!polling_cycle_active) {
-    return;  // Don't increment port counter between cycles
+    return; // Don't increment port counter between cycles
   }
-  
+
   // Safety check - if current_poll_port is 0, set it to 1
   if (current_poll_port == 0) {
     current_poll_port = 1;
@@ -540,7 +544,7 @@ void handlePortDataRequests() {
   }
 
   // Find next port that needs polling
-  int start_port = current_poll_port;  // Remember where we started
+  int start_port = current_poll_port; // Remember where we started
   for (int attempts = 0; attempts < MAX_PORTS; attempts++) {
     // Validate and wrap port number BEFORE using it
     if (current_poll_port < 1 || current_poll_port > MAX_PORTS) {
@@ -645,7 +649,7 @@ void handlePortDataRequests() {
       }
 
       last_poll_send_time = current_time;
-      
+
       // Move to next port and wrap if needed
       current_poll_port++;
       if (current_poll_port > MAX_PORTS) {
@@ -655,7 +659,7 @@ void handlePortDataRequests() {
       // Instead of breaking, return to allow delay between ports
       return;
     }
-    
+
     // Move to next port when skipping already-polled ports
     current_poll_port++;
     if (current_poll_port > MAX_PORTS) {
@@ -676,7 +680,7 @@ void handlePortDataRequests() {
   // If all ports are polled, end the polling cycle
   if (all_ports_polled) {
     polling_cycle_active = false;
-    current_poll_port = 1;  // Reset to port 1 for next cycle
+    current_poll_port = 1; // Reset to port 1 for next cycle
     last_function_run_time = current_time;
     first_run = false;
     Serial.printlnf(
@@ -707,7 +711,7 @@ void updateSystemStatus() {
       wasConnectedBefore = true;
       Serial.printlnf("First successful connection detected - immediate port "
                       "polling enabled");
-      
+
       // Prepare CAN system and attach interrupt with clean state
       prepareCANForInterrupt();
     }
@@ -760,11 +764,12 @@ void port_request_thread() {
 void handleCanQueue() {
   int messagesProcessed = 0;
   int MAX_MESSAGES_PER_LOOP = 8;
-  
+
   // If queue is critically full, process more aggressively
-  if (messageCount > (CAN_QUEUE_SIZE * 3 / 4)) {  // More than 75% full
+  if (messageCount > (CAN_QUEUE_SIZE * 3 / 4)) { // More than 75% full
     MAX_MESSAGES_PER_LOOP = 20;
-    Serial.printlnf("CAN queue critical (%d messages) - aggressive processing", messageCount);
+    Serial.printlnf("CAN queue critical (%d messages) - aggressive processing",
+                    messageCount);
   }
 
   while (messageCount > 0 && messagesProcessed < MAX_MESSAGES_PER_LOOP) {
@@ -917,11 +922,12 @@ void can_interrupt() {
     } else {
       queueOverflow = true;
       logCANError(-2, "queue_overflow");
-      
+
       // Emergency queue clear if severely overflowing
       static unsigned long lastEmergencyClear = 0;
-      if (millis() - lastEmergencyClear > 5000) {  // Only once per 5 seconds
-        Serial.println("EMERGENCY: Clearing oldest 25% of queue to prevent lockup");
+      if (millis() - lastEmergencyClear > 5000) { // Only once per 5 seconds
+        Serial.println(
+            "EMERGENCY: Clearing oldest 25% of queue to prevent lockup");
         // Clear oldest 25% of messages
         int toClear = messageCount / 4;
         queueHead = (queueHead + toClear) % CAN_QUEUE_SIZE;
@@ -949,7 +955,7 @@ void performCANRecovery() {
 
   // Stop ALL CAN operations immediately
   CAN_ERROR = true;
-  can_recovery_needed = false; // Clear the flag first
+  can_recovery_needed = false;  // Clear the flag first
   polling_cycle_active = false; // Reset polling state during recovery
 
   // Clear all queues and reset state
@@ -1046,14 +1052,16 @@ void performCANRecovery() {
 
   // Re-enable interrupts after successful controller reset
   pinMode(CAN_INT, INPUT_PULLUP);
-  
+
   // Only re-attach interrupt if we're connected and have credentials
   if (areCredentialsValid() && CELLULAR_CONNECTED) {
     // Use prepareCANForInterrupt to ensure clean state
     prepareCANForInterrupt();
-    Serial.printlnf("CAN recovery complete - interrupt re-enabled with clean state");
+    Serial.printlnf(
+        "CAN recovery complete - interrupt re-enabled with clean state");
   } else {
-    Serial.printlnf("CAN interrupt pending - will attach after connection established");
+    Serial.printlnf(
+        "CAN interrupt pending - will attach after connection established");
   }
 
   // Reset all error tracking
@@ -1268,7 +1276,8 @@ void checkSystemHealth() {
   if (uptime - lastHealthCheck > 60000) {
     Serial.printlnf("System Health - Uptime: %lu ms, Free Memory: %lu bytes",
                     uptime, freeMemory);
-    Serial.printlnf("Celluar Status: %s", CELLULAR_CONNECTED);
+    Serial.printlnf("Cellular Status: %s",
+                    CELLULAR_CONNECTED ? "connected" : "disconnected");
     Serial.printlnf("Credentials: %s", getCredentialsStatus().c_str());
     Serial.printlnf("CAN Errors (last minute): %d", can_error_count);
     Serial.printlnf("CAN Recovery needed: %s",
@@ -1338,7 +1347,7 @@ void internetCheckThread() {
         }
         disconnectTime = 0;
         did_disconnect = false;
-        //calledConnect = false;
+        // calledConnect = false;
       }
     } else {
       delay(100);
@@ -1468,30 +1477,36 @@ void canHealthMonitorThread() {
         queueOverflow = false; // Reset flag
         logCANError(-3, "persistent_queue_overflow");
       }
-      
+
       // Periodic queue health check
-      if (messageCount > (CAN_QUEUE_SIZE * 2 / 3)) {  // More than 66% full
-        Serial.printlnf("WARNING: CAN queue filling up (%d/%d messages)", messageCount, CAN_QUEUE_SIZE);
-        
-        // If queue is critically full and not being processed, force clear old messages
+      if (messageCount > (CAN_QUEUE_SIZE * 2 / 3)) { // More than 66% full
+        Serial.printlnf("WARNING: CAN queue filling up (%d/%d messages)",
+                        messageCount, CAN_QUEUE_SIZE);
+
+        // If queue is critically full and not being processed, force clear old
+        // messages
         static unsigned long lastQueueStuckTime = 0;
         static int lastQueueCount = 0;
-        
-        if (messageCount == lastQueueCount && messageCount > (CAN_QUEUE_SIZE * 4 / 5)) {
+
+        if (messageCount == lastQueueCount &&
+            messageCount > (CAN_QUEUE_SIZE * 4 / 5)) {
           // Queue hasn't changed and is >80% full - might be stuck
           if (lastQueueStuckTime == 0) {
             lastQueueStuckTime = currentTime;
-          } else if (currentTime - lastQueueStuckTime > 3000) {  // Stuck for 3 seconds
-            Serial.printlnf("CRITICAL: Queue stuck at %d messages for 3s - clearing oldest 30%%", messageCount);
+          } else if (currentTime - lastQueueStuckTime >
+                     3000) { // Stuck for 3 seconds
+            Serial.printlnf("CRITICAL: Queue stuck at %d messages for 3s - "
+                            "clearing oldest 30%%",
+                            messageCount);
             noInterrupts();
-            int toClear = messageCount * 3 / 10;  // Clear 30%
+            int toClear = messageCount * 3 / 10; // Clear 30%
             queueHead = (queueHead + toClear) % CAN_QUEUE_SIZE;
             messageCount -= toClear;
             interrupts();
             lastQueueStuckTime = 0;
           }
         } else {
-          lastQueueStuckTime = 0;  // Reset if queue is moving
+          lastQueueStuckTime = 0; // Reset if queue is moving
         }
         lastQueueCount = messageCount;
       }
@@ -1667,7 +1682,7 @@ void recoverInterruptSystem() {
     mcp2515.clearInterrupts();
     mcp2515.clearRXnOVR();
     delay(50);
-    
+
     attachInterrupt(CAN_INT, can_interrupt, FALLING);
     delay(100);
     Serial.printlnf("Interrupt re-attached after recovery with cleared state");
@@ -1770,35 +1785,37 @@ void checkTransmissionReceptionBalance() {
 
 void prepareCANForInterrupt() {
   Serial.println("Preparing CAN for interrupt attachment...");
-  
+
   // 1. Make sure interrupt is detached first
   detachInterrupt(CAN_INT);
   delay(50);
-  
+
   // 2. Clear MCP2515 error flags (including overflow flags)
   uint8_t errorFlags = mcp2515.getErrorFlags();
   if (errorFlags != 0) {
     Serial.printlnf("Clearing MCP2515 error flags: 0x%02X", errorFlags);
-    mcp2515.clearRXnOVR();  // Clear RX overflow flags
+    mcp2515.clearRXnOVR(); // Clear RX overflow flags
   }
-  
+
   // 3. Read and discard all pending messages from hardware buffers
   can_frame dummyMsg;
   int messagesCleared = 0;
-  while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK && messagesCleared < 20) {
+  while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK &&
+         messagesCleared < 20) {
     messagesCleared++;
   }
   if (messagesCleared > 0) {
-    Serial.printlnf("Discarded %d pending messages from MCP2515", messagesCleared);
+    Serial.printlnf("Discarded %d pending messages from MCP2515",
+                    messagesCleared);
   }
-  
+
   // 4. Clear all interrupt flags in MCP2515
   uint8_t intFlags = mcp2515.getInterrupts();
   if (intFlags != 0) {
     Serial.printlnf("Clearing MCP2515 interrupt flags: 0x%02X", intFlags);
     mcp2515.clearInterrupts();
   }
-  
+
   // 5. Reset our software queue state
   noInterrupts();
   queueHead = 0;
@@ -1807,46 +1824,48 @@ void prepareCANForInterrupt() {
   queueOverflow = false;
   memset(messageQueue, 0, sizeof(messageQueue));
   interrupts();
-  
+
   // 6. Reset CAN error monitoring state
   canErrorMonitor.rxOverflowCount = 0;
   canErrorMonitor.firstRxOverflowTime = 0;
   canErrorMonitor.lastRxOverflowClear = 0;
   canErrorMonitor.consecutiveErrors = 0;
-  
+
   // 7. Wait for hardware to settle
   delay(100);
-  
+
   // 8. Final check - make sure no new interrupts appeared
   intFlags = mcp2515.getInterrupts();
   if (intFlags != 0) {
     mcp2515.clearInterrupts();
     Serial.printlnf("Cleared additional interrupt flags: 0x%02X", intFlags);
   }
-  
+
   // 9. Check the interrupt pin state before attaching
   int pinState = digitalRead(CAN_INT);
-  Serial.printlnf("CAN_INT pin state before attach: %s", pinState == LOW ? "LOW (pending)" : "HIGH (clear)");
-  
+  Serial.printlnf("CAN_INT pin state before attach: %s",
+                  pinState == LOW ? "LOW (pending)" : "HIGH (clear)");
+
   // 10. If pin is still low, clear interrupts one more time
   if (pinState == LOW) {
     Serial.println("CAN_INT pin is LOW - clearing interrupts again");
     mcp2515.clearInterrupts();
     delay(50);
     pinState = digitalRead(CAN_INT);
-    Serial.printlnf("CAN_INT pin state after additional clear: %s", 
+    Serial.printlnf("CAN_INT pin state after additional clear: %s",
                     pinState == LOW ? "LOW (still pending)" : "HIGH (cleared)");
   }
-  
+
   // 11. NOW attach the interrupt with everything clean
   attachInterrupt(CAN_INT, can_interrupt, FALLING);
-  
+
   // 12. Reset timing trackers
   lastInterruptTime = millis();
   lastTransmissionTime = millis();
   canErrorMonitor.lastSuccessTime = millis();
-  
-  Serial.println("CAN interrupt attached with fully clean state - ready to receive messages");
+
+  Serial.println("CAN interrupt attached with fully clean state - ready to "
+                 "receive messages");
 }
 
 void handleRxOverflowWithEscalation(unsigned long currentTime) {

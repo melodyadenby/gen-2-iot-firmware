@@ -19,12 +19,12 @@ bool portStatusRequestPending = false;
 unsigned long portStatusRequestTime = 0;
 bool portStatusWaitingForPoll = false;
 
-// Global message history for deduplication (MAX_PORTS + 1 for non-port messages at index 0)
+// Global message history for deduplication (MAX_PORTS + 1 for non-port messages
+// at index 0)
 struct MessageHistory messageHistory[MAX_PORTS + 1] = {0};
 
 int juiceMessageCallback(String payload) {
   Serial.printlnf("Juice message received: %s", payload.c_str());
-
 
   // Convert String to char array for parsing
   int length = payload.length();
@@ -63,10 +63,8 @@ int juiceMessageCallback(String payload) {
   return 1;
 }
 
-
-
 void processCloudCommand(char cmd, char variant, int port, char btn,
-                        char *tokens[]) {
+                         char *tokens[]) {
   struct PortState *portState = getPortState(port);
 
   switch (cmd) {
@@ -268,7 +266,6 @@ void processCloudCommand(char cmd, char variant, int port, char btn,
   }
 }
 
-
 void sendPortStatus() {
   Serial.println(
       "DEBUG: sendPortStatus() called - checking if this should happen");
@@ -283,7 +280,8 @@ void sendPortStatus() {
   // Check if this is being called too early
   if (portStatusWaitingForPoll && portStatusRequestTime > 0) {
     unsigned long elapsed = millis() - portStatusRequestTime;
-    unsigned long requiredWait = PORT_CHECK_INTERVAL + 5000;
+    unsigned long requiredWait =
+        PORT_CHECK_INTERVAL + (PORT_CHECK_INTERVAL / 2);
     if (elapsed < requiredWait) {
       Serial.printlnf("ERROR: sendPortStatus() called too early! Only %lu ms "
                       "elapsed, need %lu ms",
@@ -346,8 +344,8 @@ void checkPortStatusRequest() {
   unsigned long currentTime = millis();
   // Wait for one full PORT_CHECK_INTERVAL plus buffer to ensure all ports
   // polled
-  const unsigned long WAIT_TIME = (MAX_PORTS * POLL_STAGGER_DELAY) +
-                                  5000; // PORT_CHECK_INTERVAL + 5s buffer
+  const unsigned long WAIT_TIME =
+      PORT_CHECK_INTERVAL + (PORT_CHECK_INTERVAL / 2);
 
   if (currentTime - portStatusRequestTime >= WAIT_TIME) {
     Serial.printlnf("Port status wait period complete (%lu ms, waited %lu ms) "
@@ -369,49 +367,56 @@ void checkPortStatusRequest() {
     }
   }
 }
-int publishJuiseMessage(const char* message) {
-  // Deduplication logic to prevent sending the same message twice within 2 seconds
-  
+int publishJuiseMessage(const char *message) {
+  // Deduplication logic to prevent sending the same message twice within 2
+  // seconds
+
   // Try to extract port number from message
   // Message formats: "U,0,10,1" or "C,2,10,VIN" or "H,0,1" etc.
   int port = 0;
   char tempMessage[128];
   strncpy(tempMessage, message, sizeof(tempMessage) - 1);
   tempMessage[sizeof(tempMessage) - 1] = '\0';
-  
+
   // Parse the message to get port number (3rd field in most messages)
-  char* token = strtok(tempMessage, ",");
+  char *token = strtok(tempMessage, ",");
   if (token != NULL) {
-    token = strtok(NULL, ",");  // Skip to 2nd field
+    token = strtok(NULL, ","); // Skip to 2nd field
     if (token != NULL) {
-      token = strtok(NULL, ",");  // Get 3rd field (port number)
+      token = strtok(NULL, ","); // Get 3rd field (port number)
       if (token != NULL) {
         port = atoi(token);
         // Validate port range
         if (port < 0 || port > MAX_PORTS) {
-          port = 0;  // Use index 0 for invalid/non-port messages
+          port = 0; // Use index 0 for invalid/non-port messages
         }
       }
     }
   }
-  
+
   unsigned long currentTime = millis();
-  
+
   // Check if this exact message was sent recently
   if (strcmp(messageHistory[port].lastMessage, message) == 0) {
-    unsigned long timeSinceLastSent = currentTime - messageHistory[port].lastSentTime;
-    if (timeSinceLastSent < MESSAGE_DEDUP_WINDOW_MS) {  // Configurable deduplication window
-      Serial.printlnf("DUPLICATE SUPPRESSED (sent %lu ms ago): %s", timeSinceLastSent, message);
-      return 1;  // Return success but don't actually send
+    unsigned long timeSinceLastSent =
+        currentTime - messageHistory[port].lastSentTime;
+    if (timeSinceLastSent <
+        MESSAGE_DEDUP_WINDOW_MS) { // Configurable deduplication window
+      Serial.printlnf("DUPLICATE SUPPRESSED (sent %lu ms ago): %s",
+                      timeSinceLastSent, message);
+      return 1; // Return success but don't actually send
     }
   }
-  
+
   // Store this message in history
-  strncpy(messageHistory[port].lastMessage, message, sizeof(messageHistory[port].lastMessage) - 1);
-  messageHistory[port].lastMessage[sizeof(messageHistory[port].lastMessage) - 1] = '\0';
+  strncpy(messageHistory[port].lastMessage, message,
+          sizeof(messageHistory[port].lastMessage) - 1);
+  messageHistory[port]
+      .lastMessage[sizeof(messageHistory[port].lastMessage) - 1] = '\0';
   messageHistory[port].lastSentTime = currentTime;
 
-  String payload = String::format("{\"pub_id\":\"%s\",\"message\":\"%s\"}", MANUAL_MODE, message);
+  String payload = String::format("{\"pub_id\":\"%s\",\"message\":\"%s\"}",
+                                  MANUAL_MODE, message);
   Serial.printlnf("Publishing Juise message: %s", payload.c_str());
   return Particle.publish(JUISE_OUTGOING, payload.c_str(), PRIVATE);
 }
