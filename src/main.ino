@@ -89,6 +89,9 @@ bool canReadyForMonitoring = false;
 // Flag to track when CAN interrupt has been attached
 bool canInterruptAttached = false;
 
+// Flag to track pending cloud commands that need immediate processing
+volatile bool pendingCloudCommand = false;
+
 // CAN Error Monitor Structure
 struct CANErrorMonitor {
   int consecutiveErrors;
@@ -127,6 +130,7 @@ void recoverInterruptSystem();
 void checkTransmissionReceptionBalance();
 void handleRxOverflowWithEscalation(unsigned long currentTime);
 void prepareCANForInterrupt();
+void interruptibleDelay(unsigned long ms);
 
 // Hardware watchdog handler
 void hardwareWatchdogHandler() { System.reset(RESET_NO_WAIT); }
@@ -184,7 +188,7 @@ void loop() {
 
   // Small delay to prevent CPU overload during error conditions
   if (CAN_ERROR || can_recovery_needed) {
-    delay(10);
+    interruptibleDelay(10);
   }
 }
 
@@ -323,7 +327,7 @@ void handleSystemLoop() {
   // Handle critical errors
   if (CAN_ERROR) {
     blinkCANError();
-    delay(100); // Prevent tight loop
+    interruptibleDelay(100); // Prevent tight loop (interruptible)
     return;
   }
 
@@ -349,8 +353,11 @@ void handleSystemLoop() {
   // Check for pending port status requests
   checkPortStatusRequest();
 
-  // Small delay to prevent CPU overload
-  delay(5);
+  // Small delay to prevent CPU overload (interruptible)
+  interruptibleDelay(5);
+  
+  // Process cloud messages frequently
+  Particle.process();
 }
 
 /**
@@ -365,6 +372,12 @@ void handlePortDataRequests() {
 
   // Don't start polling until CAN interrupt is attached
   if (!canInterruptAttached) {
+    return;
+  }
+  
+  // If there's a pending cloud command, pause polling to let it process
+  if (pendingCloudCommand) {
+    delay(10);  // Small delay to let cloud command process
     return;
   }
 
@@ -424,7 +437,11 @@ void handlePortDataRequests() {
         portFailureCount[i] = 0;
       }
     } else {
-      delay(100);
+      // Make delay interruptible
+      for (int i = 0; i < 10 && !pendingCloudCommand; i++) {
+        delay(10);
+        Particle.process();
+      }
       return;
     }
   }
@@ -530,9 +547,23 @@ void handlePortDataRequests() {
     }
 
     // Check if enough time has passed since last poll using smart delay
-    if (current_time - last_poll_send_time < smart_delay) {
-      // Not enough time has passed, skip this poll cycle
-      return;
+    // Make this interruptible by checking for cloud commands
+    unsigned long delay_start = millis();
+    while ((millis() - last_poll_send_time) < smart_delay) {
+      // Process Particle cloud to ensure responsiveness
+      Particle.process();
+      
+      // Check for pending cloud commands every 50ms
+      if (pendingCloudCommand) {
+        return;  // Exit immediately to process cloud command
+      }
+      
+      // Prevent infinite loop
+      if ((millis() - delay_start) > (smart_delay + 1000)) {
+        break;
+      }
+      
+      delay(50);  // Small delay between checks
     }
   }
 
@@ -652,6 +683,7 @@ void handlePortDataRequests() {
           can_recovery_needed = true;
           pollingDisabled = true;
           pollingDisabledTime = millis();
+          pendingCloudCommand = false; // Clear flag during error
           return; // Stop polling immediately
         }
 
@@ -742,6 +774,13 @@ void canThread() {
   while (true) {
     if (areCredentialsValid() && CELLULAR_CONNECTED && !CAN_ERROR &&
         !can_recovery_needed) {
+      // Give priority to cloud commands
+      if (pendingCloudCommand) {
+        delay(50);  // Give cloud command time to process
+        Particle.process();
+        continue;  // Skip this iteration to let cloud command complete
+      }
+      
       // Process incoming CAN messages
       handleCanQueue();
 
@@ -749,6 +788,9 @@ void canThread() {
       if (portFlagHandler) {
         portFlagHandler->processAllPortFlags();
       }
+      
+      // Process Particle cloud to ensure responsiveness
+      Particle.process();
     }
     // Small delay to prevent busy-waiting
     delay(10);
@@ -759,14 +801,17 @@ void port_request_thread() {
   while (true) {
     if (areCredentialsValid() && CELLULAR_CONNECTED && !CAN_ERROR &&
         !can_recovery_needed) {
-      handlePortDataRequests();
+      // Skip polling if cloud command is pending
+      if (!pendingCloudCommand) {
+        handlePortDataRequests();
+      }
 
       // Shorter delay to allow staggered polling to work properly
       // Each port will be polled with the appropriate delay between them
-      delay(50);
+      interruptibleDelay(50);
     } else {
       // Small delay to prevent busy-waiting
-      delay(100);
+      interruptibleDelay(100);
     }
   }
 }
@@ -1880,8 +1925,24 @@ void prepareCANForInterrupt() {
   lastTransmissionTime = millis();
   canErrorMonitor.lastSuccessTime = millis();
 
-  Serial.println("CAN interrupt attached with fully clean state - ready to "
-                 "receive messages");
+  Serial.println("CAN interrupt attached with fully clean state - ready to receive messages");
+}
+
+// Interruptible delay that processes cloud messages and checks for pending commands
+void interruptibleDelay(unsigned long ms) {
+  unsigned long start = millis();
+  while ((millis() - start) < ms) {
+    // Check for pending cloud commands
+    if (pendingCloudCommand) {
+      return; // Exit immediately to process cloud command
+    }
+    
+    // Process Particle cloud messages
+    Particle.process();
+    
+    // Small delay to prevent tight loop
+    delay(10);
+  }
 }
 
 void handleRxOverflowWithEscalation(unsigned long currentTime) {

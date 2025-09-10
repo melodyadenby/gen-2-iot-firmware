@@ -19,11 +19,16 @@ bool portStatusRequestPending = false;
 unsigned long portStatusRequestTime = 0;
 bool portStatusWaitingForPoll = false;
 
-// Global message history for deduplication (MAX_PORTS + 1 for non-port messages
-// at index 0)
+// Global message history for deduplication (MAX_PORTS + 1 for non-port messages at index 0)
 struct MessageHistory messageHistory[MAX_PORTS + 1] = {0};
 
+// External flag from main.ino for cloud command priority
+extern volatile bool pendingCloudCommand;
+
 int juiceMessageCallback(String payload) {
+  // Set flag to indicate cloud command needs processing
+  pendingCloudCommand = true;
+  
   Serial.printlnf("Juice message received: %s", payload.c_str());
 
   // Convert String to char array for parsing
@@ -60,6 +65,10 @@ int juiceMessageCallback(String payload) {
 
   // Process commands
   processCloudCommand(cmd, variant, port, btn, tokens);
+  
+  // Clear flag after processing
+  pendingCloudCommand = false;
+  
   return 1;
 }
 
