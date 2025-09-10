@@ -83,6 +83,12 @@ const unsigned long RECOVERY_SUCCESS_RESET_TIME =
 // Flag to track when we've just connected
 bool justConnectedFlag = false;
 
+// Flag to track when CAN is ready for health monitoring
+bool canReadyForMonitoring = false;
+
+// Flag to track when CAN interrupt has been attached
+bool canInterruptAttached = false;
+
 // CAN Error Monitor Structure
 struct CANErrorMonitor {
   int consecutiveErrors;
@@ -355,8 +361,12 @@ void handlePortDataRequests() {
   // Add static variables for timing control
   static unsigned long last_function_run_time = 0;
   static bool first_run = true;
-  static int current_poll_port =
-      0; // Don't initialize to 1, will be set when cycle starts
+  static int current_poll_port = 0;  // Don't initialize to 1, will be set when cycle starts
+
+  // Don't start polling until CAN interrupt is attached
+  if (!canInterruptAttached) {
+    return;
+  }
 
   // Only run this function on first call or once per PORT_CHECK_INTERVAL
   unsigned long current_time = millis();
@@ -955,8 +965,9 @@ void performCANRecovery() {
 
   // Stop ALL CAN operations immediately
   CAN_ERROR = true;
-  can_recovery_needed = false;  // Clear the flag first
+  can_recovery_needed = false; // Clear the flag first
   polling_cycle_active = false; // Reset polling state during recovery
+  canInterruptAttached = false; // Disable polling during recovery
 
   // Clear all queues and reset state
   noInterrupts();
@@ -1057,11 +1068,11 @@ void performCANRecovery() {
   if (areCredentialsValid() && CELLULAR_CONNECTED) {
     // Use prepareCANForInterrupt to ensure clean state
     prepareCANForInterrupt();
-    Serial.printlnf(
-        "CAN recovery complete - interrupt re-enabled with clean state");
+    canInterruptAttached = true;  // Re-enable polling after recovery
+    Serial.printlnf("CAN recovery complete - interrupt re-enabled with clean state");
   } else {
-    Serial.printlnf(
-        "CAN interrupt pending - will attach after connection established");
+    canInterruptAttached = false;  // Disable polling until connected
+    Serial.printlnf("CAN interrupt pending - will attach after connection established");
   }
 
   // Reset all error tracking
@@ -1685,8 +1696,10 @@ void recoverInterruptSystem() {
 
     attachInterrupt(CAN_INT, can_interrupt, FALLING);
     delay(100);
+    canInterruptAttached = true;  // Re-enable polling after interrupt recovery
     Serial.printlnf("Interrupt re-attached after recovery with cleared state");
   } else {
+    canInterruptAttached = false;  // Disable polling until connected
     Serial.printlnf("Interrupt not re-attached - waiting for connection");
   }
 
@@ -1856,10 +1869,13 @@ void prepareCANForInterrupt() {
                     pinState == LOW ? "LOW (still pending)" : "HIGH (cleared)");
   }
 
-  // 11. NOW attach the interrupt with everything clean
+  // 12. NOW attach the interrupt with everything clean
   attachInterrupt(CAN_INT, can_interrupt, FALLING);
+  
+  // Set flag to enable port polling
+  canInterruptAttached = true;
 
-  // 12. Reset timing trackers
+  // 13. Reset timing trackers
   lastInterruptTime = millis();
   lastTransmissionTime = millis();
   canErrorMonitor.lastSuccessTime = millis();
