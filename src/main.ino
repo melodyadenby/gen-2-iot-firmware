@@ -120,6 +120,7 @@ void checkInterruptHealth();
 void recoverInterruptSystem();
 void checkTransmissionReceptionBalance();
 void handleRxOverflowWithEscalation(unsigned long currentTime);
+void prepareCANForInterrupt();
 
 // Hardware watchdog handler
 void hardwareWatchdogHandler() { System.reset(RESET_NO_WAIT); }
@@ -252,14 +253,15 @@ void initializeHardware() {
   }
 
   pinMode(CAN_INT, INPUT_PULLUP);
-  attachInterrupt(CAN_INT, can_interrupt, FALLING);
+  // NOTE: CAN interrupt will be attached after connection is established
+  // This prevents accumulating unwanted messages during startup
 
   // Initialize interrupt health tracking
   lastInterruptTime = millis();
   lastInterruptCheck = millis();
   interruptHealthy = true;
 
-  Serial.printlnf("Hardware initialized");
+  Serial.printlnf("Hardware initialized (CAN interrupt pending)");
 }
 
 void initializeParticle() {
@@ -705,6 +707,9 @@ void updateSystemStatus() {
       wasConnectedBefore = true;
       Serial.printlnf("First successful connection detected - immediate port "
                       "polling enabled");
+      
+      // Prepare CAN system and attach interrupt with clean state
+      prepareCANForInterrupt();
     }
   } else if (areCredentialsValid()) {
     setLightPurple(); // Have credentials, connecting to Cloud
@@ -1041,8 +1046,15 @@ void performCANRecovery() {
 
   // Re-enable interrupts after successful controller reset
   pinMode(CAN_INT, INPUT_PULLUP);
-  attachInterrupt(CAN_INT, can_interrupt, FALLING);
-  Serial.printlnf("CAN interrupt re-enabled on pin %d", CAN_INT);
+  
+  // Only re-attach interrupt if we're connected and have credentials
+  if (areCredentialsValid() && CELLULAR_CONNECTED) {
+    // Use prepareCANForInterrupt to ensure clean state
+    prepareCANForInterrupt();
+    Serial.printlnf("CAN recovery complete - interrupt re-enabled with clean state");
+  } else {
+    Serial.printlnf("CAN interrupt pending - will attach after connection established");
+  }
 
   // Reset all error tracking
   can_error_count = 0;
@@ -1649,9 +1661,19 @@ void recoverInterruptSystem() {
   pinMode(CAN_INT, INPUT_PULLUP);
   delay(50);
 
-  // Re-attach interrupt
-  attachInterrupt(CAN_INT, can_interrupt, FALLING);
-  delay(100);
+  // Re-attach interrupt only if connected
+  if (areCredentialsValid() && CELLULAR_CONNECTED) {
+    // Clear any pending interrupts before re-attaching
+    mcp2515.clearInterrupts();
+    mcp2515.clearRXnOVR();
+    delay(50);
+    
+    attachInterrupt(CAN_INT, can_interrupt, FALLING);
+    delay(100);
+    Serial.printlnf("Interrupt re-attached after recovery with cleared state");
+  } else {
+    Serial.printlnf("Interrupt not re-attached - waiting for connection");
+  }
 
   // Reset interrupt health tracking
   lastInterruptTime = millis();
@@ -1744,6 +1766,87 @@ void checkTransmissionReceptionBalance() {
       lastInterruptTime = currentTime - (dynamicTxRxTimeout / 2);
     }
   }
+}
+
+void prepareCANForInterrupt() {
+  Serial.println("Preparing CAN for interrupt attachment...");
+  
+  // 1. Make sure interrupt is detached first
+  detachInterrupt(CAN_INT);
+  delay(50);
+  
+  // 2. Clear MCP2515 error flags (including overflow flags)
+  uint8_t errorFlags = mcp2515.getErrorFlags();
+  if (errorFlags != 0) {
+    Serial.printlnf("Clearing MCP2515 error flags: 0x%02X", errorFlags);
+    mcp2515.clearRXnOVR();  // Clear RX overflow flags
+  }
+  
+  // 3. Read and discard all pending messages from hardware buffers
+  can_frame dummyMsg;
+  int messagesCleared = 0;
+  while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK && messagesCleared < 20) {
+    messagesCleared++;
+  }
+  if (messagesCleared > 0) {
+    Serial.printlnf("Discarded %d pending messages from MCP2515", messagesCleared);
+  }
+  
+  // 4. Clear all interrupt flags in MCP2515
+  uint8_t intFlags = mcp2515.getInterrupts();
+  if (intFlags != 0) {
+    Serial.printlnf("Clearing MCP2515 interrupt flags: 0x%02X", intFlags);
+    mcp2515.clearInterrupts();
+  }
+  
+  // 5. Reset our software queue state
+  noInterrupts();
+  queueHead = 0;
+  queueTail = 0;
+  messageCount = 0;
+  queueOverflow = false;
+  memset(messageQueue, 0, sizeof(messageQueue));
+  interrupts();
+  
+  // 6. Reset CAN error monitoring state
+  canErrorMonitor.rxOverflowCount = 0;
+  canErrorMonitor.firstRxOverflowTime = 0;
+  canErrorMonitor.lastRxOverflowClear = 0;
+  canErrorMonitor.consecutiveErrors = 0;
+  
+  // 7. Wait for hardware to settle
+  delay(100);
+  
+  // 8. Final check - make sure no new interrupts appeared
+  intFlags = mcp2515.getInterrupts();
+  if (intFlags != 0) {
+    mcp2515.clearInterrupts();
+    Serial.printlnf("Cleared additional interrupt flags: 0x%02X", intFlags);
+  }
+  
+  // 9. Check the interrupt pin state before attaching
+  int pinState = digitalRead(CAN_INT);
+  Serial.printlnf("CAN_INT pin state before attach: %s", pinState == LOW ? "LOW (pending)" : "HIGH (clear)");
+  
+  // 10. If pin is still low, clear interrupts one more time
+  if (pinState == LOW) {
+    Serial.println("CAN_INT pin is LOW - clearing interrupts again");
+    mcp2515.clearInterrupts();
+    delay(50);
+    pinState = digitalRead(CAN_INT);
+    Serial.printlnf("CAN_INT pin state after additional clear: %s", 
+                    pinState == LOW ? "LOW (still pending)" : "HIGH (cleared)");
+  }
+  
+  // 11. NOW attach the interrupt with everything clean
+  attachInterrupt(CAN_INT, can_interrupt, FALLING);
+  
+  // 12. Reset timing trackers
+  lastInterruptTime = millis();
+  lastTransmissionTime = millis();
+  canErrorMonitor.lastSuccessTime = millis();
+  
+  Serial.println("CAN interrupt attached with fully clean state - ready to receive messages");
 }
 
 void handleRxOverflowWithEscalation(unsigned long currentTime) {

@@ -54,6 +54,9 @@ const int HOUR_TO_MS_MULTIPLIER = 60 * MIN_TO_MS_MULTIPLIER;
 #define PARTICLE_KEEPALIVE_MIN 23
 #define WATCHDOG_TIMEOUT_MS 60000
 
+// Message Deduplication Configuration
+#define MESSAGE_DEDUP_WINDOW_MS 2000  // 2 seconds by default
+
 // Configuration Functions
 const char *getCurrentEnvironment();
 

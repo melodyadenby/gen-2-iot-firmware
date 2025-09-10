@@ -253,14 +253,14 @@ void PortFlagHandler::handleVINToCloud(int port) {
   logFlagActivity(port, "VIN_TO_CLOUD", "Sending VIN to cloud");
 
   if (strlen(state->VIN) > 0) {
-    char buffer[64];
-    snprintf(buffer, sizeof(buffer), "C,2,%d,%s", port, state->VIN);
-    publishToCloud(buffer);
-
-    // Clear all VIN cloud flags - no retry logic needed
+    // Clear all VIN cloud flags BEFORE sending - prevents race conditions
     state->send_vin_to_cloud_flag = false;
     state->awaiting_cloud_vin_resp = false;
     state->cloud_vin_resp_timer = 0;
+
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "C,2,%d,%s", port, state->VIN);
+    publishToCloud(buffer);
 
     Serial.printlnf("Port %d - VIN sent to cloud (one-time only): %s", port,
                     state->VIN);
@@ -333,38 +333,41 @@ void PortFlagHandler::checkHeartbeatStatus(int port) {
   if (state->heartbeat_success) {
     logFlagActivity(port, "HEARTBEAT", "Success");
 
+    // Clear flags BEFORE publishing
+    state->check_heartbeat_status = false;
+    state->heartbeat_success = false;
+
     // Publish heartbeat success to cloud: H,0,port,1
     char buffer[16];
     formatCloudMessage("H", "0", port, "1", buffer, sizeof(buffer));
     publishToCloud(buffer);
-
-
-    state->check_heartbeat_status = false;
-    state->heartbeat_success = false;
   } else if (state->command_timeout <= 0) {
     logFlagActivity(port, "HEARTBEAT", "Timeout");
+
+    // Clear flag BEFORE publishing
+    state->check_heartbeat_status = false;
 
     // Publish heartbeat failure to cloud: H,0,port,0
     char buffer[16];
     formatCloudMessage("H", "0", port, "0", buffer, sizeof(buffer));
     publishToCloud(buffer);
-
-    state->check_heartbeat_status = false;
   }
 }
 
 void PortFlagHandler::handleUnlockSuccess(int port) {
   logFlagActivity(port, "UNLOCK", "Success");
 
-  char buffer[16];
-  formatCloudMessage("U", "0", port, "1", buffer, sizeof(buffer));
-  publishToCloud(buffer);
-
-  // Reset retry count on success
+  // Reset retry count and clear flags BEFORE publishing
   PortState *state = getPortState(port);
   if (state) {
     state->unlock_retry_count = 0;
+    state->check_unlock_status = false;
+    state->unlock_successful = false;
   }
+
+  char buffer[16];
+  formatCloudMessage("U", "0", port, "1", buffer, sizeof(buffer));
+  publishToCloud(buffer);
 
   resetPortAfterOperation(port);
 }
@@ -399,13 +402,13 @@ void PortFlagHandler::handleUnlockFailure(int port) {
            "Failed - max retries (%d) reached", MAX_UNLOCK_RETRY);
   logFlagActivity(port, "UNLOCK", failureMessage);
 
+  // Reset all unlock-related flags BEFORE publishing
+  state->check_unlock_status = false;
+  state->unlock_retry_count = 0;
+
   char buffer[16];
   formatCloudMessage("U", "0", port, "0", buffer, sizeof(buffer));
   publishToCloud(buffer);
-
-  // Reset all unlock-related flags
-  state->check_unlock_status = false;
-  state->unlock_retry_count = 0;
 }
 
 void PortFlagHandler::handleChargeSuccess(int port) {

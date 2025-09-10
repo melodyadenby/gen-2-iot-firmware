@@ -19,6 +19,9 @@ bool portStatusRequestPending = false;
 unsigned long portStatusRequestTime = 0;
 bool portStatusWaitingForPoll = false;
 
+// Global message history for deduplication (MAX_PORTS + 1 for non-port messages at index 0)
+struct MessageHistory messageHistory[MAX_PORTS + 1] = {0};
+
 int juiceMessageCallback(String payload) {
   Serial.printlnf("Juice message received: %s", payload.c_str());
 
@@ -367,8 +370,64 @@ void checkPortStatusRequest() {
   }
 }
 int publishJuiseMessage(const char* message) {
+  // Deduplication logic to prevent sending the same message twice within 2 seconds
+  
+  // Try to extract port number from message
+  // Message formats: "U,0,10,1" or "C,2,10,VIN" or "H,0,1" etc.
+  int port = 0;
+  char tempMessage[128];
+  strncpy(tempMessage, message, sizeof(tempMessage) - 1);
+  tempMessage[sizeof(tempMessage) - 1] = '\0';
+  
+  // Parse the message to get port number (3rd field in most messages)
+  char* token = strtok(tempMessage, ",");
+  if (token != NULL) {
+    token = strtok(NULL, ",");  // Skip to 2nd field
+    if (token != NULL) {
+      token = strtok(NULL, ",");  // Get 3rd field (port number)
+      if (token != NULL) {
+        port = atoi(token);
+        // Validate port range
+        if (port < 0 || port > MAX_PORTS) {
+          port = 0;  // Use index 0 for invalid/non-port messages
+        }
+      }
+    }
+  }
+  
+  unsigned long currentTime = millis();
+  
+  // Check if this exact message was sent recently
+  if (strcmp(messageHistory[port].lastMessage, message) == 0) {
+    unsigned long timeSinceLastSent = currentTime - messageHistory[port].lastSentTime;
+    if (timeSinceLastSent < MESSAGE_DEDUP_WINDOW_MS) {  // Configurable deduplication window
+      Serial.printlnf("DUPLICATE SUPPRESSED (sent %lu ms ago): %s", timeSinceLastSent, message);
+      return 1;  // Return success but don't actually send
+    }
+  }
+  
+  // Store this message in history
+  strncpy(messageHistory[port].lastMessage, message, sizeof(messageHistory[port].lastMessage) - 1);
+  messageHistory[port].lastMessage[sizeof(messageHistory[port].lastMessage) - 1] = '\0';
+  messageHistory[port].lastSentTime = currentTime;
 
   String payload = String::format("{\"pub_id\":\"%s\",\"message\":\"%s\"}", MANUAL_MODE, message);
   Serial.printlnf("Publishing Juise message: %s", payload.c_str());
   return Particle.publish(JUISE_OUTGOING, payload.c_str(), PRIVATE);
+}
+
+void clearMessageHistory(int port) {
+  if (port == 0) {
+    // Clear all message history
+    for (int i = 0; i <= MAX_PORTS; i++) {
+      messageHistory[i].lastMessage[0] = '\0';
+      messageHistory[i].lastSentTime = 0;
+    }
+    Serial.println("Cleared all message history for deduplication");
+  } else if (port > 0 && port <= MAX_PORTS) {
+    // Clear specific port's message history
+    messageHistory[port].lastMessage[0] = '\0';
+    messageHistory[port].lastSentTime = 0;
+    Serial.printlnf("Cleared message history for port %d", port);
+  }
 }
