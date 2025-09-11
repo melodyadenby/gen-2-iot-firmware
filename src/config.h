@@ -5,8 +5,8 @@
 #include "Particle.h"
 
 // Version and Device Info
-#define BUILD_VERSION "Gen 1.0.6"
-#define PRODUCT_VERSION_NUM 43
+#define BUILD_VERSION "Gen 1.0.7"
+#define PRODUCT_VERSION_NUM 44
 
 // Time Conversion Constants
 const int MIN_TO_MS_MULTIPLIER = 60000;
