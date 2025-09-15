@@ -19,7 +19,7 @@ const int HOUR_TO_MS_MULTIPLIER = 60 * MIN_TO_MS_MULTIPLIER;
 #define ENV_LOCAL 2
 
 // Set the current environment
-#define ENV 0
+#define ENV ENV_PROD
 
 // Environment-specific Configuration
 #if ENV == ENV_QA
@@ -33,10 +33,10 @@ const int HOUR_TO_MS_MULTIPLIER = 60 * MIN_TO_MS_MULTIPLIER;
 #define JUISE_INCOMING "juise-message"
 #define JUISE_OUTGOING "juise-outgoing"
 #elif ENV == ENV_LOCAL
-#define PARTICLE_CREDENTIALS_SUBSCRIBE "hook-response/qa-credentials"
-#define PARTICLE_CREDENTIALS "qa-credentials"
+#define PARTICLE_CREDENTIALS_SUBSCRIBE "hook-response/credentials"
+#define PARTICLE_CREDENTIALS "credentials"
 #define JUISE_INCOMING "juise-message"
-#define JUISE_OUTGOING "juise-outgoing"
+#define JUISE_OUTGOING "local-juise-outgoing"
 #else
 #define PARTICLE_CREDENTIALS_SUBSCRIBE "hook-response/credentials"
 #define PARTICLE_CREDENTIALS "credentials"
