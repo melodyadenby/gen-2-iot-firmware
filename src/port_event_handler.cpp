@@ -389,6 +389,7 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
     Serial.printlnf("Port %d - COMPLETE VIN: %s", port, state->VIN);
 
     state->vin_request_flag = false;
+    state->vin_retry_count = 0;  // Reset retry counter on successful completion
 
     // Only send to cloud if vehicle is not already charging (prevents cloud
     // spam on system restart) - unless this is a spontaneous VIN

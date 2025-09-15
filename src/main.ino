@@ -35,6 +35,11 @@ volatile int messageCount = 0;
 volatile int queueHead = 0;
 volatile int queueTail = 0;
 
+// Queue health telemetry
+volatile uint32_t totalMessagesDropped = 0;
+volatile uint32_t totalMessagesProcessed = 0;
+volatile uint32_t maxQueueDepth = 0;
+
 unsigned long last_port_check_reset =
     0; // Tracks the last time DID_PORT_CHECK was reset
 // CAN Error monitoring and recovery
@@ -874,6 +879,7 @@ void handleCanQueue() {
         msg = messageQueue[queueHead];
         queueHead = (queueHead + 1) % CAN_QUEUE_SIZE;
         messageCount--;
+        totalMessagesProcessed++;
         validMessage = true;
 
         // Handle queue overflow reset
@@ -1009,20 +1015,24 @@ void can_interrupt() {
       messageQueue[queueTail] = recMsg;
       queueTail = (queueTail + 1) % CAN_QUEUE_SIZE;
       messageCount++;
+      // Track max queue depth
+      if (messageCount > maxQueueDepth) {
+        maxQueueDepth = messageCount;
+      }
     } else {
+      // Queue is full - drop the NEW message, not existing ones
       queueOverflow = true;
-      logCANError(-2, "queue_overflow");
-
-      // Emergency queue clear if severely overflowing
-      static unsigned long lastEmergencyClear = 0;
-      if (millis() - lastEmergencyClear > 5000) { // Only once per 5 seconds
-        Serial.println(
-            "EMERGENCY: Clearing oldest 25% of queue to prevent lockup");
-        // Clear oldest 25% of messages
-        int toClear = messageCount / 4;
-        queueHead = (queueHead + toClear) % CAN_QUEUE_SIZE;
-        messageCount -= toClear;
-        lastEmergencyClear = millis();
+      static uint32_t droppedMessages = 0;
+      static unsigned long lastDropLog = 0;
+      droppedMessages++;
+      totalMessagesDropped++;
+      
+      // Log periodically, not every drop
+      if (millis() - lastDropLog > 5000) {
+        Serial.printlnf("Queue full - dropped %lu new messages (keeping existing)", 
+                       droppedMessages);
+        logCANError(-2, "queue_overflow");
+        lastDropLog = millis();
       }
     }
   } else {
@@ -1367,14 +1377,30 @@ void checkSystemHealth() {
 
   static unsigned long lastHealthCheck = 0;
   if (uptime - lastHealthCheck > 60000) {
-    Serial.printlnf("System Health - Uptime: %lu ms, Free Memory: %lu bytes",
-                    uptime, freeMemory);
+    // Calculate message drop rate
+    float dropRate = 0.0;
+    if (totalMessagesProcessed + totalMessagesDropped > 0) {
+      dropRate = (totalMessagesDropped * 100.0) / 
+                 (totalMessagesProcessed + totalMessagesDropped);
+    }
+    
+    Serial.printlnf("System Health - Uptime: %lu min, Free Memory: %lu bytes",
+                    uptime / 60000, freeMemory);
+    Serial.printlnf("Queue Stats - Current: %d/%d, Max Depth: %lu, Processed: %lu, "
+                    "Dropped: %lu (%.1f%%)",
+                    messageCount, CAN_QUEUE_SIZE, maxQueueDepth,
+                    totalMessagesProcessed, totalMessagesDropped, dropRate);
     Serial.printlnf("Cellular Status: %s",
                     CELLULAR_CONNECTED ? "connected" : "disconnected");
     Serial.printlnf("Credentials: %s", getCredentialsStatus().c_str());
     Serial.printlnf("CAN Errors (last minute): %d", can_error_count);
     Serial.printlnf("CAN Recovery needed: %s",
                     can_recovery_needed ? "yes" : "no");
+    
+    // Warn if drop rate is concerning
+    if (dropRate > 5.0) {
+      Serial.printlnf("WARNING: High message drop rate detected: %.1f%%", dropRate);
+    }
 
     if (portFlagHandler) {
       Serial.printlnf("Ports with pending flags: %d",
@@ -1571,35 +1597,31 @@ void canHealthMonitorThread() {
         logCANError(-3, "persistent_queue_overflow");
       }
 
-      // Periodic queue health check
+      // Periodic queue health check - just monitor, don't clear
       if (messageCount > (CAN_QUEUE_SIZE * 2 / 3)) { // More than 66% full
-        Serial.printlnf("WARNING: CAN queue filling up (%d/%d messages)",
-                        messageCount, CAN_QUEUE_SIZE);
-
-        // If queue is critically full and not being processed, force clear old
-        // messages
-        static unsigned long lastQueueStuckTime = 0;
+        static unsigned long lastWarningTime = 0;
+        static int stuckCount = 0;
         static int lastQueueCount = 0;
+        
+        if (currentTime - lastWarningTime > 10000) { // Log every 10 seconds
+          Serial.printlnf("WARNING: CAN queue filling up (%d/%d messages)",
+                          messageCount, CAN_QUEUE_SIZE);
+          lastWarningTime = currentTime;
+        }
 
+        // Detect if queue is stuck but DON'T clear messages
         if (messageCount == lastQueueCount &&
             messageCount > (CAN_QUEUE_SIZE * 4 / 5)) {
-          // Queue hasn't changed and is >80% full - might be stuck
-          if (lastQueueStuckTime == 0) {
-            lastQueueStuckTime = currentTime;
-          } else if (currentTime - lastQueueStuckTime >
-                     3000) { // Stuck for 3 seconds
-            Serial.printlnf("CRITICAL: Queue stuck at %d messages for 3s - "
-                            "clearing oldest 30%%",
+          stuckCount++;
+          if (stuckCount > 3) {
+            Serial.printlnf("CRITICAL: Queue appears stuck at %d messages - may need recovery",
                             messageCount);
-            noInterrupts();
-            int toClear = messageCount * 3 / 10; // Clear 30%
-            queueHead = (queueHead + toClear) % CAN_QUEUE_SIZE;
-            messageCount -= toClear;
-            interrupts();
-            lastQueueStuckTime = 0;
+            // Instead of clearing, try to trigger recovery
+            canErrorMonitor.consecutiveErrors++;
+            stuckCount = 0;
           }
         } else {
-          lastQueueStuckTime = 0; // Reset if queue is moving
+          stuckCount = 0; // Reset if queue is moving
         }
         lastQueueCount = messageCount;
       }

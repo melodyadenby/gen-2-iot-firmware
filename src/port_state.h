@@ -48,6 +48,7 @@ struct PortState {
   bool charge_successful;      // charge success?
   bool heartbeat_success;
   int unlock_retry_count; // Number of unlock retries attempted
+  int vin_retry_count = 0; // Track VIN retries for backoff calculation
   unsigned long
       last_emergency_unlock_time; // Last time emergency unlock was sent
   char charge_varient;            // Current charge varient

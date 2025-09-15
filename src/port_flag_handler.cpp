@@ -70,6 +70,7 @@ void PortFlagHandler::handleVINRequest(int port) {
       ERROR_OK) {
     state->vin_request_flag = false;
     state->send_vin_request_timer = millis();
+    // Don't reset retry count here - only reset when VIN is complete
   } else {
     handleCommandError(port, "VIN_REQUEST", -1);
   }
@@ -566,23 +567,34 @@ void PortFlagHandler::updateCommandTimeout(int port, int decrement) {
 
 void PortFlagHandler::checkVINTimeout(int port, PortState *state) {
   const unsigned long VIN_TIMEOUT = 30000; // 30 seconds
+  const unsigned long VIN_RETRY_BACKOFF = 5000; // 5 second backoff between retries
 
   // Only check if we have a partial VIN
   if (strlen(state->VIN) > 0 && strlen(state->VIN) < VIN_LENGTH) {
     unsigned long timeSinceLastUpdate =
         millis() - state->send_vin_request_timer;
     if (timeSinceLastUpdate > VIN_TIMEOUT) {
-      Serial.printlnf("Port %d - Partial VIN timeout after %lu ms, clearing "
-                      "and restarting",
-                      port, timeSinceLastUpdate);
+      Serial.printlnf("Port %d - Partial VIN timeout after %lu ms (retry count: %d)",
+                      port, timeSinceLastUpdate, state->vin_retry_count);
 
-      // Clear partial VIN and restart the process
+      // Add exponential backoff to prevent rapid retries
+      unsigned long backoffDelay = VIN_RETRY_BACKOFF * (state->vin_retry_count + 1);
+      if (backoffDelay > 60000) backoffDelay = 60000; // Cap at 60 seconds
+      
+      // Check if enough time has passed since last retry
+      if (timeSinceLastUpdate < (VIN_TIMEOUT + backoffDelay)) {
+        // Still in backoff period, don't retry yet
+        return;
+      }
+
+      // Clear partial VIN and retry with backoff
       memset(state->VIN, 0, sizeof(state->VIN));
       state->vin_request_flag = true;
       state->send_vin_request_timer = millis();
+      state->vin_retry_count++; // Increment retry counter
 
-      Serial.printlnf("Port %d - VIN timeout recovery: requesting new VIN",
-                      port);
+      Serial.printlnf("Port %d - VIN timeout recovery: retry %d (next backoff: %lu ms)",
+                      port, state->vin_retry_count, backoffDelay);
     }
   }
 }
