@@ -48,6 +48,10 @@ const unsigned long CAN_ERROR_RESET_INTERVAL = 60000; // 1 minute
 const unsigned long INTERNET_DISCONNECT_RESET_TIMEOUT = 60000; // 1 minute
 const unsigned long INTERNET_RESET_COOLDOWN =
     300000; // 5 minutes between resets
+
+// Retained memory variables to track boot times across resets
+retained uint32_t bootCounter = 0;
+retained uint32_t lastBootTime = 0;
 const unsigned long INTERNET_SOFT_RECOVERY_TIMEOUT =
     30000; // 30 seconds for soft recovery
 
@@ -133,10 +137,22 @@ void prepareCANForInterrupt();
 void interruptibleDelay(unsigned long ms);
 
 // Hardware watchdog handler
-void hardwareWatchdogHandler() { System.reset(RESET_NO_WAIT); }
+void hardwareWatchdogHandler() {
+  Serial.printlnf("HARDWARE WATCHDOG RESET at uptime %lu ms", millis());
+  Serial.flush();
+  delay(100);
+  System.reset(RESET_NO_WAIT);
+}
 
 void setup() {
   initializeSystem();
+
+  // Log startup time and reset reason IMMEDIATELY
+  Serial.printlnf("=== DEVICE STARTUP AT %lu ms ===", millis());
+  Serial.printlnf("Reset reason: %d, Reset data: %d", System.resetReason(),
+                  System.resetReasonData());
+  Serial.printlnf("System version: %s", System.version().c_str());
+  Serial.printlnf("Free memory: %lu bytes", System.freeMemory());
 
   // Initialize hardware watchdog early - 20 second timeout
   hardwareWatchdog =
@@ -167,6 +183,7 @@ void setup() {
     Serial.printlnf("Recovery System: READY");
   } else {
     Serial.printlnf("=== STARTUP FAILED - CAN ERROR DETECTED ===");
+    Serial.printlnf("Uptime before CAN error reset: %lu ms", millis());
     resetDevice("CAN error during startup");
   }
 }
@@ -180,8 +197,9 @@ void loop() {
 
   // Detect if main loop is running too slowly (potential freeze indicator)
   if (lastLoopTime > 0 && (currentTime - lastLoopTime) > 5000) {
-    Serial.printlnf("WARNING: Main loop delay detected: %lu ms",
-                    currentTime - lastLoopTime);
+    Serial.printlnf(
+        "WARNING: Main loop delay detected: %lu ms (uptime: %lu ms)",
+        currentTime - lastLoopTime, currentTime);
   }
   lastLoopTime = currentTime;
   handleSystemLoop();
@@ -207,6 +225,22 @@ void initializeSystem() {
   while (!Serial)
     ;
   // delay(2000);
+
+  // Track boot times using retained memory
+  bootCounter++;
+  uint32_t currentTime = Time.now();
+  Serial.printlnf("=== BOOT #%lu at Unix time %lu ===", bootCounter,
+                  currentTime);
+
+  if (bootCounter > 1 && lastBootTime > 0) {
+    uint32_t timeBetweenBoots = currentTime - lastBootTime;
+    Serial.printlnf("Time since last boot: %lu seconds", timeBetweenBoots);
+    if (timeBetweenBoots < 30) {
+      Serial.printlnf("WARNING: Rapid restart detected! (%lu seconds)",
+                      timeBetweenBoots);
+    }
+  }
+  lastBootTime = currentTime;
 
   // Initialize all subsystems
   initializePorts();
@@ -355,7 +389,7 @@ void handleSystemLoop() {
 
   // Small delay to prevent CPU overload (interruptible)
   interruptibleDelay(5);
-  
+
   // Process cloud messages frequently
   Particle.process();
 }
@@ -368,16 +402,17 @@ void handlePortDataRequests() {
   // Add static variables for timing control
   static unsigned long last_function_run_time = 0;
   static bool first_run = true;
-  static int current_poll_port = 0;  // Don't initialize to 1, will be set when cycle starts
+  static int current_poll_port =
+      0; // Don't initialize to 1, will be set when cycle starts
 
   // Don't start polling until CAN interrupt is attached
   if (!canInterruptAttached) {
     return;
   }
-  
+
   // If there's a pending cloud command, pause polling to let it process
   if (pendingCloudCommand) {
-    delay(10);  // Small delay to let cloud command process
+    delay(10); // Small delay to let cloud command process
     return;
   }
 
@@ -552,18 +587,18 @@ void handlePortDataRequests() {
     while ((millis() - last_poll_send_time) < smart_delay) {
       // Process Particle cloud to ensure responsiveness
       Particle.process();
-      
+
       // Check for pending cloud commands every 50ms
       if (pendingCloudCommand) {
-        return;  // Exit immediately to process cloud command
+        return; // Exit immediately to process cloud command
       }
-      
+
       // Prevent infinite loop
       if ((millis() - delay_start) > (smart_delay + 1000)) {
         break;
       }
-      
-      delay(50);  // Small delay between checks
+
+      delay(50); // Small delay between checks
     }
   }
 
@@ -684,7 +719,7 @@ void handlePortDataRequests() {
           pollingDisabled = true;
           pollingDisabledTime = millis();
           pendingCloudCommand = false; // Clear flag during error
-          return; // Stop polling immediately
+          return;                      // Stop polling immediately
         }
 
         // Hardware watchdog will handle timeout protection automatically
@@ -776,11 +811,11 @@ void canThread() {
         !can_recovery_needed) {
       // Give priority to cloud commands
       if (pendingCloudCommand) {
-        delay(50);  // Give cloud command time to process
+        delay(50); // Give cloud command time to process
         Particle.process();
-        continue;  // Skip this iteration to let cloud command complete
+        continue; // Skip this iteration to let cloud command complete
       }
-      
+
       // Process incoming CAN messages
       handleCanQueue();
 
@@ -788,7 +823,7 @@ void canThread() {
       if (portFlagHandler) {
         portFlagHandler->processAllPortFlags();
       }
-      
+
       // Process Particle cloud to ensure responsiveness
       Particle.process();
     }
@@ -1010,7 +1045,7 @@ void performCANRecovery() {
 
   // Stop ALL CAN operations immediately
   CAN_ERROR = true;
-  can_recovery_needed = false; // Clear the flag first
+  can_recovery_needed = false;  // Clear the flag first
   polling_cycle_active = false; // Reset polling state during recovery
   canInterruptAttached = false; // Disable polling during recovery
 
@@ -1113,11 +1148,13 @@ void performCANRecovery() {
   if (areCredentialsValid() && CELLULAR_CONNECTED) {
     // Use prepareCANForInterrupt to ensure clean state
     prepareCANForInterrupt();
-    canInterruptAttached = true;  // Re-enable polling after recovery
-    Serial.printlnf("CAN recovery complete - interrupt re-enabled with clean state");
+    canInterruptAttached = true; // Re-enable polling after recovery
+    Serial.printlnf(
+        "CAN recovery complete - interrupt re-enabled with clean state");
   } else {
-    canInterruptAttached = false;  // Disable polling until connected
-    Serial.printlnf("CAN interrupt pending - will attach after connection established");
+    canInterruptAttached = false; // Disable polling until connected
+    Serial.printlnf(
+        "CAN interrupt pending - will attach after connection established");
   }
 
   // Reset all error tracking
@@ -1741,10 +1778,10 @@ void recoverInterruptSystem() {
 
     attachInterrupt(CAN_INT, can_interrupt, FALLING);
     delay(100);
-    canInterruptAttached = true;  // Re-enable polling after interrupt recovery
+    canInterruptAttached = true; // Re-enable polling after interrupt recovery
     Serial.printlnf("Interrupt re-attached after recovery with cleared state");
   } else {
-    canInterruptAttached = false;  // Disable polling until connected
+    canInterruptAttached = false; // Disable polling until connected
     Serial.printlnf("Interrupt not re-attached - waiting for connection");
   }
 
@@ -1916,7 +1953,7 @@ void prepareCANForInterrupt() {
 
   // 12. NOW attach the interrupt with everything clean
   attachInterrupt(CAN_INT, can_interrupt, FALLING);
-  
+
   // Set flag to enable port polling
   canInterruptAttached = true;
 
@@ -1925,10 +1962,12 @@ void prepareCANForInterrupt() {
   lastTransmissionTime = millis();
   canErrorMonitor.lastSuccessTime = millis();
 
-  Serial.println("CAN interrupt attached with fully clean state - ready to receive messages");
+  Serial.println("CAN interrupt attached with fully clean state - ready to "
+                 "receive messages");
 }
 
-// Interruptible delay that processes cloud messages and checks for pending commands
+// Interruptible delay that processes cloud messages and checks for pending
+// commands
 void interruptibleDelay(unsigned long ms) {
   unsigned long start = millis();
   while ((millis() - start) < ms) {
@@ -1936,10 +1975,10 @@ void interruptibleDelay(unsigned long ms) {
     if (pendingCloudCommand) {
       return; // Exit immediately to process cloud command
     }
-    
+
     // Process Particle cloud messages
     Particle.process();
-    
+
     // Small delay to prevent tight loop
     delay(10);
   }
