@@ -49,7 +49,8 @@ void logDebugInfo(const char *checkpoint);
 // New Architecture Functions
 void initializeArchitecture();
 void canThread();
-void handleCanQueue();
+void transferMessagesToProcessingQueue();  // NEW: Lightweight message transfer
+void processMessagesFromQueue();           // NEW: Heavy processing in main loop
 void processCANMessage(const can_frame &rawMessage);
 
 // System State Management

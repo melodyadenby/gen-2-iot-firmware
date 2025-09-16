@@ -170,6 +170,9 @@ void setup() {
   if (!CAN_ERROR) {
     initializeParticle();
 
+    // Initialize processing queue mutex
+    os_mutex_create(&processingQueueMutex);
+
     // Start alternate threads
     new Thread("can_thread", canThread);
     new Thread("port_request_thread", port_request_thread);
@@ -207,6 +210,18 @@ void loop() {
         currentTime - lastLoopTime, currentTime);
   }
   lastLoopTime = currentTime;
+  
+  // Process CAN messages from the processing queue (lightweight)
+  if (!CAN_ERROR && !can_recovery_needed) {
+    processMessagesFromQueue();
+  }
+  
+  // Process port flags in main loop (safer than in thread)
+  if (portFlagHandler && areCredentialsValid() && CELLULAR_CONNECTED && 
+      !CAN_ERROR && !can_recovery_needed) {
+    portFlagHandler->processAllPortFlags();
+  }
+  
   handleSystemLoop();
 
   // Small delay to prevent CPU overload during error conditions
@@ -809,31 +824,86 @@ void updateSystemStatus() {
 // ========================================
 
 void canThread() {
-  Serial.printlnf("CAN processing thread started");
+  Serial.printlnf("CAN thread started - lightweight message transfer only");
 
   while (true) {
-    if (areCredentialsValid() && CELLULAR_CONNECTED && !CAN_ERROR &&
-        !can_recovery_needed) {
-      // Give priority to cloud commands
-      if (pendingCloudCommand) {
-        delay(50); // Give cloud command time to process
-        Particle.process();
-        continue; // Skip this iteration to let cloud command complete
-      }
-
-      // Process incoming CAN messages
-      handleCanQueue();
-
-      // Process port flags (replaces old flagHandler)
-      if (portFlagHandler) {
-        portFlagHandler->processAllPortFlags();
-      }
-
-      // Process Particle cloud to ensure responsiveness
-      Particle.process();
+    // Simple job: move messages from interrupt queue to processing queue
+    // No heavy processing, no cloud operations, no flag handling
+    
+    if (messageCount > 0) {
+      transferMessagesToProcessingQueue();
     }
+    
     // Small delay to prevent busy-waiting
-    delay(10);
+    delay(5);  // Shorter delay since we're doing less work
+  }
+}
+
+// Lightweight function to transfer messages from interrupt queue to processing queue
+void transferMessagesToProcessingQueue() {
+  int transferred = 0;
+  const int MAX_TRANSFER_PER_LOOP = 10;
+  
+  while (messageCount > 0 && transferred < MAX_TRANSFER_PER_LOOP) {
+    can_frame msg;
+    bool gotMessage = false;
+    
+    // Get message from interrupt queue (minimal time with interrupts disabled)
+    noInterrupts();
+    if (messageCount > 0 && queueHead >= 0 && queueHead < CAN_QUEUE_SIZE) {
+      msg = messageQueue[queueHead];
+      queueHead = (queueHead + 1) % CAN_QUEUE_SIZE;
+      messageCount--;
+      gotMessage = true;
+      
+      // Clear overflow flag when queue is manageable
+      if (queueOverflow && messageCount < (CAN_QUEUE_SIZE / 2)) {
+        queueOverflow = false;
+      }
+    }
+    interrupts();
+    
+    // Add to processing queue (with mutex for thread safety)
+    if (gotMessage) {
+      os_mutex_lock(processingQueueMutex);
+      if (processingQueueCount < PROCESSING_QUEUE_SIZE) {
+        processingQueue[processingQueueTail] = msg;
+        processingQueueTail = (processingQueueTail + 1) % PROCESSING_QUEUE_SIZE;
+        processingQueueCount++;
+        transferred++;
+      } else {
+        Serial.println("WARNING: Processing queue full!");
+      }
+      os_mutex_unlock(processingQueueMutex);
+    }
+  }
+}
+
+// Process messages from the secondary queue (called from main loop)
+void processMessagesFromQueue() {
+  int processed = 0;
+  const int MAX_PROCESS_PER_LOOP = 5;  // Process fewer at a time in main loop
+  
+  while (processingQueueCount > 0 && processed < MAX_PROCESS_PER_LOOP) {
+    can_frame msg;
+    bool gotMessage = false;
+    
+    // Get message from processing queue
+    os_mutex_lock(processingQueueMutex);
+    if (processingQueueCount > 0) {
+      msg = processingQueue[processingQueueHead];
+      processingQueueHead = (processingQueueHead + 1) % PROCESSING_QUEUE_SIZE;
+      processingQueueCount--;
+      gotMessage = true;
+    }
+    os_mutex_unlock(processingQueueMutex);
+    
+    // Process the message (heavy work done in main loop context)
+    if (gotMessage) {
+      processCANMessage(msg);
+      totalMessagesProcessed++;
+      processed++;
+    }
   }
 }
 
@@ -856,60 +926,8 @@ void port_request_thread() {
   }
 }
 
-void handleCanQueue() {
-  int messagesProcessed = 0;
-  int MAX_MESSAGES_PER_LOOP = 8;
-
-  // If queue is critically full, process more aggressively
-  if (messageCount > (CAN_QUEUE_SIZE * 3 / 4)) { // More than 75% full
-    MAX_MESSAGES_PER_LOOP = 20;
-    Serial.printlnf("CAN queue critical (%d messages) - aggressive processing",
-                    messageCount);
-  }
-
-  while (messageCount > 0 && messagesProcessed < MAX_MESSAGES_PER_LOOP) {
-    can_frame msg;
-    bool validMessage = false;
-
-    // Thread-safe message extraction
-    noInterrupts();
-    if (messageCount > 0) {
-      if (queueHead >= 0 && queueHead < CAN_QUEUE_SIZE && queueTail >= 0 &&
-          queueTail < CAN_QUEUE_SIZE) {
-        msg = messageQueue[queueHead];
-        queueHead = (queueHead + 1) % CAN_QUEUE_SIZE;
-        messageCount--;
-        totalMessagesProcessed++;
-        validMessage = true;
-
-        // Handle queue overflow reset
-        if (queueOverflow && messageCount < (CAN_QUEUE_SIZE / 2)) {
-          queueOverflow = false;
-          Serial.println("Queue overflow cleared");
-        }
-      } else {
-        // Invalid queue state, reset
-        queueTail = 0;
-        queueHead = 0;
-        messageCount = 0;
-        Serial.println(
-            "ERROR: Invalid queue indices detected - resetting queue");
-      }
-    }
-    interrupts();
-
-    // Process the message using clean architecture
-    if (validMessage) {
-      processCANMessage(msg);
-      messagesProcessed++;
-    }
-
-    // Yield periodically
-    if (messagesProcessed % 2 == 0) {
-      Particle.process();
-    }
-  }
-}
+// DEPRECATED - Replaced by transferMessagesToProcessingQueue and processMessagesFromQueue
+// void handleCanQueue() - removed
 
 void processCANMessage(const can_frame &rawMessage) {
   // Check for corrupted CAN ID (negative or excessively large values)
@@ -1026,10 +1044,10 @@ void can_interrupt() {
       static unsigned long lastDropLog = 0;
       droppedMessages++;
       totalMessagesDropped++;
-      
+
       // Log periodically, not every drop
       if (millis() - lastDropLog > 5000) {
-        Serial.printlnf("Queue full - dropped %lu new messages (keeping existing)", 
+        Serial.printlnf("Queue full - dropped %lu new messages (keeping existing)",
                        droppedMessages);
         logCANError(-2, "queue_overflow");
         lastDropLog = millis();
@@ -1380,15 +1398,17 @@ void checkSystemHealth() {
     // Calculate message drop rate
     float dropRate = 0.0;
     if (totalMessagesProcessed + totalMessagesDropped > 0) {
-      dropRate = (totalMessagesDropped * 100.0) / 
+      dropRate = (totalMessagesDropped * 100.0) /
                  (totalMessagesProcessed + totalMessagesDropped);
     }
-    
+
     Serial.printlnf("System Health - Uptime: %lu min, Free Memory: %lu bytes",
                     uptime / 60000, freeMemory);
-    Serial.printlnf("Queue Stats - Current: %d/%d, Max Depth: %lu, Processed: %lu, "
-                    "Dropped: %lu (%.1f%%)",
-                    messageCount, CAN_QUEUE_SIZE, maxQueueDepth,
+    Serial.printlnf("Interrupt Queue: %d/%d | Processing Queue: %d/%d | Max Depth: %lu",
+                    messageCount, CAN_QUEUE_SIZE, 
+                    processingQueueCount, PROCESSING_QUEUE_SIZE,
+                    maxQueueDepth);
+    Serial.printlnf("Messages - Processed: %lu | Dropped: %lu (%.1f%%)",
                     totalMessagesProcessed, totalMessagesDropped, dropRate);
     Serial.printlnf("Cellular Status: %s",
                     CELLULAR_CONNECTED ? "connected" : "disconnected");
@@ -1396,7 +1416,7 @@ void checkSystemHealth() {
     Serial.printlnf("CAN Errors (last minute): %d", can_error_count);
     Serial.printlnf("CAN Recovery needed: %s",
                     can_recovery_needed ? "yes" : "no");
-    
+
     // Warn if drop rate is concerning
     if (dropRate > 5.0) {
       Serial.printlnf("WARNING: High message drop rate detected: %.1f%%", dropRate);
@@ -1602,7 +1622,7 @@ void canHealthMonitorThread() {
         static unsigned long lastWarningTime = 0;
         static int stuckCount = 0;
         static int lastQueueCount = 0;
-        
+
         if (currentTime - lastWarningTime > 10000) { // Log every 10 seconds
           Serial.printlnf("WARNING: CAN queue filling up (%d/%d messages)",
                           messageCount, CAN_QUEUE_SIZE);
