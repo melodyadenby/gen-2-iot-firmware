@@ -35,6 +35,14 @@ volatile int messageCount = 0;
 volatile int queueHead = 0;
 volatile int queueTail = 0;
 
+// Secondary processing queue (for thread-safe message handling)
+#define PROCESSING_QUEUE_SIZE 50
+can_frame processingQueue[PROCESSING_QUEUE_SIZE];
+int processingQueueHead = 0;
+int processingQueueTail = 0;
+int processingQueueCount = 0;
+os_mutex_t processingQueueMutex;
+
 // Queue health telemetry
 volatile uint32_t totalMessagesDropped = 0;
 volatile uint32_t totalMessagesProcessed = 0;
