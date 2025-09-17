@@ -343,11 +343,67 @@ void initializeHardware() {
   }
 
   delay(50);
+  
+  // CRITICAL: Clear ALL buffers BEFORE entering normal mode
+  // This prevents startup overflow when all ports are docked and sending VINs
+  Serial.println("Pre-startup: Clearing any existing CAN messages before normal mode...");
+  
+  can_frame dummyMsg;
+  int preStartupCleared = 0;
+  
+  // Clear messages that might be in buffers from previous operations
+  while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK && preStartupCleared < 100) {
+    preStartupCleared++;
+  }
+  
+  // Clear any error flags
+  mcp2515.clearRXnOVR();
+  mcp2515.clearInterrupts();
+  
+  if (preStartupCleared > 0) {
+    Serial.printlnf("Pre-startup cleared %d existing messages", preStartupCleared);
+  }
+  
   err = mcp2515.setNormalMode();
   if (err != mcp2515.ERROR_OK) {
     reportCANError(err, "setNormalMode", true);
     return;
   }
+
+  Serial.println("CAN controller: Normal mode OK!");
+
+  // CRITICAL: Immediately start draining messages that flood in after normal mode
+  Serial.println("=== STARTUP BUFFER DRAIN: Continuously clearing flood messages ===");
+  can_frame floodMsg;
+  int totalDrained = 0;
+  unsigned long drainStartTime = millis();
+  
+  // Drain for 3 seconds to handle initial message flood
+  while (millis() - drainStartTime < 3000) {
+    int drainedThisLoop = 0;
+    
+    // Read and discard all available messages
+    while (mcp2515.readMessage(&floodMsg) == MCP2515::ERROR_OK && drainedThisLoop < 50) {
+      totalDrained++;
+      drainedThisLoop++;
+    }
+    
+    // Clear overflow flags if they occur
+    uint8_t errorFlags = mcp2515.getErrorFlags();
+    if (errorFlags & 0xC0) {  // RX0OVR or RX1OVR
+      mcp2515.clearRXnOVR();
+      Serial.printlnf("Cleared overflow flags during startup drain (total drained: %d)", totalDrained);
+    }
+    
+    // Brief delay between drain cycles
+    delay(50);
+  }
+  
+  Serial.printlnf("=== STARTUP DRAIN COMPLETE: Discarded %d flood messages ===", totalDrained);
+  
+  // Final cleanup before proceeding
+  mcp2515.clearRXnOVR();
+  mcp2515.clearInterrupts();
 
   pinMode(CAN_INT, INPUT_PULLUP);
   // NOTE: CAN interrupt will be attached after connection is established
@@ -1994,36 +2050,100 @@ void checkTransmissionReceptionBalance() {
 }
 
 void prepareCANForInterrupt() {
-  Serial.println("Preparing CAN for interrupt attachment...");
-
-  // 1. Make sure interrupt is detached first
-  detachInterrupt(CAN_INT);
-  delay(50);
-
-  // 2. Clear MCP2515 error flags (including overflow flags)
-  uint8_t errorFlags = mcp2515.getErrorFlags();
-  if (errorFlags != 0) {
-    Serial.printlnf("Clearing MCP2515 error flags: 0x%02X", errorFlags);
-    mcp2515.clearRXnOVR(); // Clear RX overflow flags
-  }
-
-  // 3. Read and discard all pending messages from hardware buffers
-  can_frame dummyMsg;
-  int messagesCleared = 0;
-  while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK &&
-         messagesCleared < 20) {
-    messagesCleared++;
-  }
-  if (messagesCleared > 0) {
-    Serial.printlnf("Discarded %d pending messages from MCP2515",
-                    messagesCleared);
-  }
-
-  // 4. Clear all interrupt flags in MCP2515
-  uint8_t intFlags = mcp2515.getInterrupts();
-  if (intFlags != 0) {
-    Serial.printlnf("Clearing MCP2515 interrupt flags: 0x%02X", intFlags);
+  // Check if this is the first startup (not a recovery)
+  static bool isFirstStartup = true;
+  
+  if (isFirstStartup) {
+    Serial.println("INITIAL STARTUP: Aggressively clearing ALL CAN buffers...");
+    
+    // 1. Make sure interrupt is detached
+    detachInterrupt(CAN_INT);
+    delay(100);  // Longer delay for initial startup
+    
+    // 2. Clear ALL error flags multiple times
+    for (int i = 0; i < 3; i++) {
+      mcp2515.clearRXnOVR();
+      mcp2515.clearInterrupts();
+      uint8_t errorFlags = mcp2515.getErrorFlags();
+      if (errorFlags != 0) {
+        Serial.printlnf("Clearing error flags (pass %d): 0x%02X", i+1, errorFlags);
+      }
+      delay(10);
+    }
+    
+    // 3. Aggressively read and discard ALL messages
+    can_frame dummyMsg;
+    int totalCleared = 0;
+    int passes = 0;
+    const int MAX_MESSAGES = 500;  // Handle worst case: all ports sending multiple messages
+    
+    // Keep clearing until truly empty
+    while (passes < 10) {  // Up to 10 passes to ensure completely empty
+      int messagesThisPass = 0;
+      
+      // Clear as many messages as possible
+      while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK && 
+             totalCleared < MAX_MESSAGES) {
+        totalCleared++;
+        messagesThisPass++;
+      }
+      
+      if (messagesThisPass == 0) {
+        // No messages found, we're done
+        break;
+      }
+      
+      Serial.printlnf("Startup clear pass %d: removed %d messages", passes+1, messagesThisPass);
+      
+      // Clear any overflow flags that occurred during clearing
+      mcp2515.clearRXnOVR();
+      mcp2515.clearInterrupts();
+      
+      passes++;
+      delay(20);  // Brief delay between passes
+    }
+    
+    Serial.printlnf("INITIAL STARTUP COMPLETE: Cleared %d total stale messages in %d passes", 
+                    totalCleared, passes);
+    
+    isFirstStartup = false;  // Mark that we've done the aggressive clear
+    
+    // 4. Final cleanup
+    mcp2515.clearRXnOVR();
     mcp2515.clearInterrupts();
+    
+  } else {
+    // Normal (non-initial) preparation for recovery scenarios
+    Serial.println("Preparing CAN for interrupt attachment...");
+    
+    detachInterrupt(CAN_INT);
+    delay(50);
+    
+    // Clear error flags
+    uint8_t errorFlags = mcp2515.getErrorFlags();
+    if (errorFlags != 0) {
+      Serial.printlnf("Clearing MCP2515 error flags: 0x%02X", errorFlags);
+      mcp2515.clearRXnOVR();
+    }
+    
+    // Read and discard pending messages (less aggressive for recovery)
+    can_frame dummyMsg;
+    int messagesCleared = 0;
+    while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK &&
+           messagesCleared < 50) {
+      messagesCleared++;
+    }
+    if (messagesCleared > 0) {
+      Serial.printlnf("Discarded %d pending messages from MCP2515",
+                      messagesCleared);
+    }
+    
+    // Clear interrupt flags
+    uint8_t intFlags = mcp2515.getInterrupts();
+    if (intFlags != 0) {
+      Serial.printlnf("Clearing MCP2515 interrupt flags: 0x%02X", intFlags);
+      mcp2515.clearInterrupts();
+    }
   }
 
   // 5. Reset our software queue state
@@ -2035,54 +2155,23 @@ void prepareCANForInterrupt() {
   memset(messageQueue, 0, sizeof(messageQueue));
   interrupts();
 
+  Serial.println("Software queues reset");
+
   // 6. Reset CAN error monitoring state
+  canErrorMonitor.consecutiveErrors = 0;
   canErrorMonitor.rxOverflowCount = 0;
   canErrorMonitor.firstRxOverflowTime = 0;
-  canErrorMonitor.lastRxOverflowClear = 0;
-  canErrorMonitor.consecutiveErrors = 0;
+  canErrorMonitor.lastRxOverflowClear = millis();
 
-  // 7. Wait for hardware to settle
-  delay(100);
-
-  // 8. Final check - make sure no new interrupts appeared
-  intFlags = mcp2515.getInterrupts();
-  if (intFlags != 0) {
-    mcp2515.clearInterrupts();
-    Serial.printlnf("Cleared additional interrupt flags: 0x%02X", intFlags);
-  }
-
-  // 9. Check the interrupt pin state before attaching
-  int pinState = digitalRead(CAN_INT);
-  Serial.printlnf("CAN_INT pin state before attach: %s",
-                  pinState == LOW ? "LOW (pending)" : "HIGH (clear)");
-
-  // 10. If pin is still low, clear interrupts one more time
-  if (pinState == LOW) {
-    Serial.println("CAN_INT pin is LOW - clearing interrupts again");
-    mcp2515.clearInterrupts();
-    delay(50);
-    pinState = digitalRead(CAN_INT);
-    Serial.printlnf("CAN_INT pin state after additional clear: %s",
-                    pinState == LOW ? "LOW (still pending)" : "HIGH (cleared)");
-  }
-
-  // 12. NOW attach the interrupt with everything clean
+  // 7. Re-attach interrupt
+  pinMode(CAN_INT, INPUT_PULLUP);
   attachInterrupt(CAN_INT, can_interrupt, FALLING);
+  canInterruptAttached = true;  // Enable port polling
 
-  // Set flag to enable port polling
-  canInterruptAttached = true;
-
-  // 13. Reset timing trackers
-  lastInterruptTime = millis();
-  lastTransmissionTime = millis();
-  canErrorMonitor.lastSuccessTime = millis();
-
-  Serial.println("CAN interrupt attached with fully clean state - ready to "
-                 "receive messages");
+  Serial.println("CAN interrupt re-attached with clean state");
 }
 
-// Interruptible delay that processes cloud messages and checks for pending
-// commands
+// Interruptible delay that processes cloud messages and checks for pending commands
 void interruptibleDelay(unsigned long ms) {
   unsigned long start = millis();
   while ((millis() - start) < ms) {
@@ -2094,8 +2183,8 @@ void interruptibleDelay(unsigned long ms) {
     // Process Particle cloud messages
     Particle.process();
 
-    // Small delay to prevent tight loop
-    delay(10);
+    // 5ms chunks for faster cloud command detection
+    delay(5);
   }
 }
 
