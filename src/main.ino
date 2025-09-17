@@ -207,6 +207,15 @@ void setup() {
 void loop() {
   ApplicationWatchdog::checkin(); // Feed hardware watchdog
   DeviceInfoLedger::instance().loop();
+  
+  // Process cloud messages FIRST to receive any pending commands
+  Particle.process();
+  
+  // Check if cloud command already pending
+  if (pendingCloudCommand) {
+    Serial.println("Cloud command pending - priority processing");
+    return;  // Skip everything else this iteration
+  }
 
   static unsigned long lastLoopTime = 0;
   unsigned long currentTime = millis();
@@ -221,13 +230,29 @@ void loop() {
   
   // Process CAN messages from the processing queue (lightweight)
   if (!CAN_ERROR && !can_recovery_needed) {
+    // Check before processing
+    Particle.process();
+    if (pendingCloudCommand) return;
+    
     processMessagesFromQueue();
+    
+    // Check after processing
+    Particle.process();
+    if (pendingCloudCommand) return;
   }
   
   // Process port flags in main loop (safer than in thread)
   if (portFlagHandler && areCredentialsValid() && CELLULAR_CONNECTED && 
       !CAN_ERROR && !can_recovery_needed) {
+    // Check before flag processing
+    Particle.process();
+    if (pendingCloudCommand) return;
+    
     portFlagHandler->processAllPortFlags();
+    
+    // Check after flag processing
+    Particle.process();
+    if (pendingCloudCommand) return;
   }
   
   handleSystemLoop();
@@ -635,6 +660,9 @@ void handlePortDataRequests() {
     Serial.printlnf("portFlagHandler not initialized");
     return;
   }
+  
+  // Process cloud messages to check for incoming commands
+  Particle.process();
 
   // Only process port polling when we're in an active cycle
   if (!polling_cycle_active) {
@@ -650,6 +678,14 @@ void handlePortDataRequests() {
   // Find next port that needs polling
   int start_port = current_poll_port; // Remember where we started
   for (int attempts = 0; attempts < MAX_PORTS; attempts++) {
+    // Check for cloud commands every few ports
+    if (attempts > 0 && attempts % 3 == 0) {
+      Particle.process();
+      if (pendingCloudCommand) {
+        // Don't disable polling_cycle_active - just exit to handle command
+        return;  // Will resume polling in next iteration
+      }
+    }
     // Validate and wrap port number BEFORE using it
     if (current_poll_port < 1 || current_poll_port > MAX_PORTS) {
       current_poll_port = 1; // Wrap around or fix invalid port number
@@ -755,6 +791,15 @@ void handlePortDataRequests() {
 
       last_poll_send_time = current_time;
 
+      // Check for cloud messages after each port poll
+      Particle.process();
+      
+      // Exit immediately if cloud command arrived
+      if (pendingCloudCommand) {
+        // Don't disable polling - just exit to handle command
+        return;  // Will resume from current_poll_port next time
+      }
+
       // Move to next port and wrap if needed
       current_poll_port++;
       if (current_poll_port > MAX_PORTS) {
@@ -769,6 +814,15 @@ void handlePortDataRequests() {
     current_poll_port++;
     if (current_poll_port > MAX_PORTS) {
       current_poll_port = 1;
+    }
+    
+    // Check for cloud messages even when skipping ports
+    if (attempts % 4 == 0) {  // Every 4 ports checked
+      Particle.process();
+      if (pendingCloudCommand) {
+        // Keep polling active, just exit to process command
+        return;  // Will continue from where we left off
+      }
     }
   }
 
@@ -893,6 +947,12 @@ void processMessagesFromQueue() {
   const int MAX_PROCESS_PER_LOOP = 5;  // Process fewer at a time in main loop
   
   while (processingQueueCount > 0 && processed < MAX_PROCESS_PER_LOOP) {
+    // Check for cloud messages every 2 CAN messages
+    if (processed > 0 && processed % 2 == 0) {
+      Particle.process();
+      if (pendingCloudCommand) return;  // Exit immediately
+    }
+    
     can_frame msg;
     bool gotMessage = false;
     
@@ -911,6 +971,11 @@ void processMessagesFromQueue() {
       processCANMessage(msg);
       totalMessagesProcessed++;
       processed++;
+      
+      // Check for cloud messages every few CAN messages
+      if (processed % 2 == 0) {
+        Particle.process();
+      }
     }
   }
 }

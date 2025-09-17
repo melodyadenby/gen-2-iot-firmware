@@ -14,9 +14,15 @@ PortFlagHandler::PortFlagHandler(PortStateManager *manager)
 void PortFlagHandler::processAllPortFlags() {
   // Process flags for all ports in round-robin fashion
   for (int i = 0; i < MAX_PORTS; i++) {
+    // Check for cloud messages between each port
+    Particle.process();
+    
     int port = getNextPort();
     if (hasPortPendingFlags(port)) {
       processPortFlags(port);
+      
+      // Check again after processing a port's flags
+      Particle.process();
     }
   }
 }
@@ -31,6 +37,9 @@ void PortFlagHandler::processPortFlags(int port) {
     return;
   }
 
+  // Process cloud messages at start of flag processing
+  Particle.process();
+  
   // Check for partial VIN timeout
   checkVINTimeout(port, state);
 

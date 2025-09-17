@@ -389,7 +389,7 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
     Serial.printlnf("Port %d - COMPLETE VIN: %s", port, state->VIN);
 
     state->vin_request_flag = false;
-    state->vin_retry_count = 0;  // Reset retry counter on successful completion
+    state->vin_retry_count = 0; // Reset retry counter on successful completion
 
     // Only send to cloud if vehicle is not already charging (prevents cloud
     // spam on system restart) - unless this is a spontaneous VIN
@@ -497,15 +497,21 @@ void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
 
   PortState *state = getPortState(port);
   if (state) {
-    Serial.printlnf("⚡ Charge response from port %d", port);
+    Serial.printlnf("⚡ Charge response from port %d, Status: %s", port,
+                    message.chargeData.variant == '1' ||
+                            message.chargeData.variant == '2'
+                        ? "Charging"
+                    : message.chargeData.variant == '3' ? "Not Charging"
+                                                        : "Unknown");
     Serial.printlnf("⚡ chargeData: %c", message.chargeData.variant);
     // Validate charge variant matches what we sent
     if (message.chargeData.variant == '1' ||
         message.chargeData.variant == '2') {
       state->charge_successful = true;
-      Serial.printlnf("Charge success on port %d, variant: %c", port,
-                      message.chargeData.variant);
+      state->charging = true;
       state->check_charge_status = false;
+    } else if (message.chargeData.variant == '3') {
+      state->charging = false;
     } else {
       Serial.printlnf(
           "Charge variant mismatch on port %d. Expected: %c, Got: %c", port,
