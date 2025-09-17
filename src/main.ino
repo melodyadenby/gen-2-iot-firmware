@@ -167,16 +167,17 @@ void setup() {
   Serial.printlnf("System version: %s", System.version().c_str());
   Serial.printlnf("Free memory: %lu bytes", System.freeMemory());
 
-  // Initialize hardware watchdog early - 20 second timeout
-  hardwareWatchdog =
-      new ApplicationWatchdog(20000, hardwareWatchdogHandler, 1536);
-  Serial.printlnf("Hardware ApplicationWatchdog initialized (20s timeout)");
 
   initializeArchitecture();
   initializeHardware();
 
   if (!CAN_ERROR) {
     initializeParticle();
+
+    // Initialize hardware watchdog - 20 second timeout
+    hardwareWatchdog =
+        new ApplicationWatchdog(20000, hardwareWatchdogHandler, 1536);
+    Serial.printlnf("Hardware ApplicationWatchdog initialized (20s timeout)");
 
     // Initialize processing queue mutex
     os_mutex_create(&processingQueueMutex);
@@ -207,10 +208,10 @@ void setup() {
 void loop() {
   ApplicationWatchdog::checkin(); // Feed hardware watchdog
   DeviceInfoLedger::instance().loop();
-  
+
   // Process cloud messages FIRST to receive any pending commands
   Particle.process();
-  
+
   // Check if cloud command already pending
   if (pendingCloudCommand) {
     Serial.println("Cloud command pending - priority processing");
@@ -227,34 +228,34 @@ void loop() {
         currentTime - lastLoopTime, currentTime);
   }
   lastLoopTime = currentTime;
-  
+
   // Process CAN messages from the processing queue (lightweight)
   if (!CAN_ERROR && !can_recovery_needed) {
     // Check before processing
     Particle.process();
     if (pendingCloudCommand) return;
-    
+
     processMessagesFromQueue();
-    
+
     // Check after processing
     Particle.process();
     if (pendingCloudCommand) return;
   }
-  
+
   // Process port flags in main loop (safer than in thread)
-  if (portFlagHandler && areCredentialsValid() && CELLULAR_CONNECTED && 
+  if (portFlagHandler && areCredentialsValid() && CELLULAR_CONNECTED &&
       !CAN_ERROR && !can_recovery_needed) {
     // Check before flag processing
     Particle.process();
     if (pendingCloudCommand) return;
-    
+
     portFlagHandler->processAllPortFlags();
-    
+
     // Check after flag processing
     Particle.process();
     if (pendingCloudCommand) return;
   }
-  
+
   handleSystemLoop();
 
   // Small delay to prevent CPU overload during error conditions
@@ -343,27 +344,27 @@ void initializeHardware() {
   }
 
   delay(50);
-  
+
   // CRITICAL: Clear ALL buffers BEFORE entering normal mode
   // This prevents startup overflow when all ports are docked and sending VINs
   Serial.println("Pre-startup: Clearing any existing CAN messages before normal mode...");
-  
+
   can_frame dummyMsg;
   int preStartupCleared = 0;
-  
+
   // Clear messages that might be in buffers from previous operations
   while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK && preStartupCleared < 100) {
     preStartupCleared++;
   }
-  
+
   // Clear any error flags
   mcp2515.clearRXnOVR();
   mcp2515.clearInterrupts();
-  
+
   if (preStartupCleared > 0) {
     Serial.printlnf("Pre-startup cleared %d existing messages", preStartupCleared);
   }
-  
+
   err = mcp2515.setNormalMode();
   if (err != mcp2515.ERROR_OK) {
     reportCANError(err, "setNormalMode", true);
@@ -372,38 +373,32 @@ void initializeHardware() {
 
   Serial.println("CAN controller: Normal mode OK!");
 
-  // CRITICAL: Immediately start draining messages that flood in after normal mode
-  Serial.println("=== STARTUP BUFFER DRAIN: Continuously clearing flood messages ===");
-  can_frame floodMsg;
+  // Extended startup drain to prevent overflow during vulnerable period
+  Serial.println("Starting extended startup drain...");
+  unsigned long drainStart = millis();
   int totalDrained = 0;
-  unsigned long drainStartTime = millis();
-  
-  // Drain for 3 seconds to handle initial message flood
-  while (millis() - drainStartTime < 3000) {
+
+  // Drain for 10 seconds to cover entire startup sequence
+  while (millis() - drainStart < 10000) {
     int drainedThisLoop = 0;
-    
-    // Read and discard all available messages
-    while (mcp2515.readMessage(&floodMsg) == MCP2515::ERROR_OK && drainedThisLoop < 50) {
+
+    // Drain all available messages
+    while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK && drainedThisLoop < 50) {
       totalDrained++;
       drainedThisLoop++;
     }
-    
+
     // Clear overflow flags if they occur
-    uint8_t errorFlags = mcp2515.getErrorFlags();
-    if (errorFlags & 0xC0) {  // RX0OVR or RX1OVR
+    uint8_t flags = mcp2515.getErrorFlags();
+    if (flags & 0xC0) {  // RX0OVR or RX1OVR
       mcp2515.clearRXnOVR();
-      Serial.printlnf("Cleared overflow flags during startup drain (total drained: %d)", totalDrained);
+      Serial.printlnf("Prevented overflow during drain (total: %d)", totalDrained);
     }
-    
-    // Brief delay between drain cycles
-    delay(50);
+
+    delay(50);  // 50ms between cycles
   }
-  
-  Serial.printlnf("=== STARTUP DRAIN COMPLETE: Discarded %d flood messages ===", totalDrained);
-  
-  // Final cleanup before proceeding
-  mcp2515.clearRXnOVR();
-  mcp2515.clearInterrupts();
+
+  Serial.printlnf("Extended drain complete: cleared %d messages over 10 seconds", totalDrained);
 
   pinMode(CAN_INT, INPUT_PULLUP);
   // NOTE: CAN interrupt will be attached after connection is established
@@ -716,7 +711,7 @@ void handlePortDataRequests() {
     Serial.printlnf("portFlagHandler not initialized");
     return;
   }
-  
+
   // Process cloud messages to check for incoming commands
   Particle.process();
 
@@ -849,7 +844,7 @@ void handlePortDataRequests() {
 
       // Check for cloud messages after each port poll
       Particle.process();
-      
+
       // Exit immediately if cloud command arrived
       if (pendingCloudCommand) {
         // Don't disable polling - just exit to handle command
@@ -871,7 +866,7 @@ void handlePortDataRequests() {
     if (current_poll_port > MAX_PORTS) {
       current_poll_port = 1;
     }
-    
+
     // Check for cloud messages even when skipping ports
     if (attempts % 4 == 0) {  // Every 4 ports checked
       Particle.process();
@@ -947,11 +942,11 @@ void canThread() {
   while (true) {
     // Simple job: move messages from interrupt queue to processing queue
     // No heavy processing, no cloud operations, no flag handling
-    
+
     if (messageCount > 0) {
       transferMessagesToProcessingQueue();
     }
-    
+
     // Small delay to prevent busy-waiting
     delay(5);  // Shorter delay since we're doing less work
   }
@@ -961,11 +956,11 @@ void canThread() {
 void transferMessagesToProcessingQueue() {
   int transferred = 0;
   const int MAX_TRANSFER_PER_LOOP = 10;
-  
+
   while (messageCount > 0 && transferred < MAX_TRANSFER_PER_LOOP) {
     can_frame msg;
     bool gotMessage = false;
-    
+
     // Get message from interrupt queue (minimal time with interrupts disabled)
     noInterrupts();
     if (messageCount > 0 && queueHead >= 0 && queueHead < CAN_QUEUE_SIZE) {
@@ -973,14 +968,14 @@ void transferMessagesToProcessingQueue() {
       queueHead = (queueHead + 1) % CAN_QUEUE_SIZE;
       messageCount--;
       gotMessage = true;
-      
+
       // Clear overflow flag when queue is manageable
       if (queueOverflow && messageCount < (CAN_QUEUE_SIZE / 2)) {
         queueOverflow = false;
       }
     }
     interrupts();
-    
+
     // Add to processing queue (with mutex for thread safety)
     if (gotMessage) {
       os_mutex_lock(processingQueueMutex);
@@ -1001,17 +996,17 @@ void transferMessagesToProcessingQueue() {
 void processMessagesFromQueue() {
   int processed = 0;
   const int MAX_PROCESS_PER_LOOP = 5;  // Process fewer at a time in main loop
-  
+
   while (processingQueueCount > 0 && processed < MAX_PROCESS_PER_LOOP) {
     // Check for cloud messages every 2 CAN messages
     if (processed > 0 && processed % 2 == 0) {
       Particle.process();
       if (pendingCloudCommand) return;  // Exit immediately
     }
-    
+
     can_frame msg;
     bool gotMessage = false;
-    
+
     // Get message from processing queue
     os_mutex_lock(processingQueueMutex);
     if (processingQueueCount > 0) {
@@ -1021,13 +1016,13 @@ void processMessagesFromQueue() {
       gotMessage = true;
     }
     os_mutex_unlock(processingQueueMutex);
-    
+
     // Process the message (heavy work done in main loop context)
     if (gotMessage) {
       processCANMessage(msg);
       totalMessagesProcessed++;
       processed++;
-      
+
       // Check for cloud messages every few CAN messages
       if (processed % 2 == 0) {
         Particle.process();
@@ -1534,7 +1529,7 @@ void checkSystemHealth() {
     Serial.printlnf("System Health - Uptime: %lu min, Free Memory: %lu bytes",
                     uptime / 60000, freeMemory);
     Serial.printlnf("Interrupt Queue: %d/%d | Processing Queue: %d/%d | Max Depth: %lu",
-                    messageCount, CAN_QUEUE_SIZE, 
+                    messageCount, CAN_QUEUE_SIZE,
                     processingQueueCount, PROCESSING_QUEUE_SIZE,
                     maxQueueDepth);
     Serial.printlnf("Messages - Processed: %lu | Dropped: %lu (%.1f%%)",
@@ -2052,14 +2047,14 @@ void checkTransmissionReceptionBalance() {
 void prepareCANForInterrupt() {
   // Check if this is the first startup (not a recovery)
   static bool isFirstStartup = true;
-  
+
   if (isFirstStartup) {
     Serial.println("INITIAL STARTUP: Aggressively clearing ALL CAN buffers...");
-    
+
     // 1. Make sure interrupt is detached
     detachInterrupt(CAN_INT);
     delay(100);  // Longer delay for initial startup
-    
+
     // 2. Clear ALL error flags multiple times
     for (int i = 0; i < 3; i++) {
       mcp2515.clearRXnOVR();
@@ -2070,62 +2065,62 @@ void prepareCANForInterrupt() {
       }
       delay(10);
     }
-    
+
     // 3. Aggressively read and discard ALL messages
     can_frame dummyMsg;
     int totalCleared = 0;
     int passes = 0;
     const int MAX_MESSAGES = 500;  // Handle worst case: all ports sending multiple messages
-    
+
     // Keep clearing until truly empty
     while (passes < 10) {  // Up to 10 passes to ensure completely empty
       int messagesThisPass = 0;
-      
+
       // Clear as many messages as possible
-      while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK && 
+      while (mcp2515.readMessage(&dummyMsg) == MCP2515::ERROR_OK &&
              totalCleared < MAX_MESSAGES) {
         totalCleared++;
         messagesThisPass++;
       }
-      
+
       if (messagesThisPass == 0) {
         // No messages found, we're done
         break;
       }
-      
+
       Serial.printlnf("Startup clear pass %d: removed %d messages", passes+1, messagesThisPass);
-      
+
       // Clear any overflow flags that occurred during clearing
       mcp2515.clearRXnOVR();
       mcp2515.clearInterrupts();
-      
+
       passes++;
       delay(20);  // Brief delay between passes
     }
-    
-    Serial.printlnf("INITIAL STARTUP COMPLETE: Cleared %d total stale messages in %d passes", 
+
+    Serial.printlnf("INITIAL STARTUP COMPLETE: Cleared %d total stale messages in %d passes",
                     totalCleared, passes);
-    
+
     isFirstStartup = false;  // Mark that we've done the aggressive clear
-    
+
     // 4. Final cleanup
     mcp2515.clearRXnOVR();
     mcp2515.clearInterrupts();
-    
+
   } else {
     // Normal (non-initial) preparation for recovery scenarios
     Serial.println("Preparing CAN for interrupt attachment...");
-    
+
     detachInterrupt(CAN_INT);
     delay(50);
-    
+
     // Clear error flags
     uint8_t errorFlags = mcp2515.getErrorFlags();
     if (errorFlags != 0) {
       Serial.printlnf("Clearing MCP2515 error flags: 0x%02X", errorFlags);
       mcp2515.clearRXnOVR();
     }
-    
+
     // Read and discard pending messages (less aggressive for recovery)
     can_frame dummyMsg;
     int messagesCleared = 0;
@@ -2137,7 +2132,7 @@ void prepareCANForInterrupt() {
       Serial.printlnf("Discarded %d pending messages from MCP2515",
                       messagesCleared);
     }
-    
+
     // Clear interrupt flags
     uint8_t intFlags = mcp2515.getInterrupts();
     if (intFlags != 0) {
