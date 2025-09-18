@@ -49,7 +49,7 @@ void turnOffLight()
 
 void blinkCANError()
 {
-    // Serial.println("CAN error!");
+    // Log.info("CAN error!");
     setLightRed();
     delay(100);
     turnOffLight();
@@ -64,7 +64,7 @@ void blinkCANBusError()
 }
 void blinkIdentityError()
 {
-    Serial.println("Identitiy error");
+    Log.error("Identitiy error");
     for (int i = 1; i <= 10; i++)
     {
         setLightBlue();

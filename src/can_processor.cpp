@@ -33,7 +33,7 @@ CANMessageProcessor::parseMessage(const can_frame &rawMessage)
   switch (parsedMsg.messageType)
   {
   case CAN_MSG_STATUS:
-    Serial.printlnf("STATUS RECIEVED FROM PORT %d", rawMessage.can_id);
+    Log.info("STATUS RECIEVED FROM PORT %d", rawMessage.can_id);
     parseStatusMessage(rawMessage.data, rawMessage.can_dlc, parsedMsg);
     break;
 
@@ -124,7 +124,7 @@ void CANMessageProcessor::parseStatusMessage(const uint8_t *payload,
                                              size_t length,
                                              ParsedCANMessage &parsedMsg)
 {
-  Serial.printlnf("%s", payload);
+  Log.info("%s", payload);
   if (length < 6)
   {
     parsedMsg.isValid = false;
@@ -156,7 +156,7 @@ void CANMessageProcessor::parseVINMessage(const uint8_t *payload, size_t length,
   // Check if payload starts with 'K'
   if (payload[0] != 'K')
   {
-    Serial.println("VIN message doesn't start with 'K'");
+    Log.info("VIN message doesn't start with 'K'");
     parsedMsg.isValid = false;
     return;
   }
@@ -171,7 +171,7 @@ void CANMessageProcessor::parseVINMessage(const uint8_t *payload, size_t length,
   safeExtractString(payload, 1, vinDataLen, parsedMsg.vinData.vin,
                     sizeof(parsedMsg.vinData.vin));
 
-  //Serial.printf("Extracted VIN chunk: '%s'\n", parsedMsg.vinData.vin);
+  //Log.info("Extracted VIN chunk: '%s'\n", parsedMsg.vinData.vin);
   parsedMsg.isValid = true;
 }
 

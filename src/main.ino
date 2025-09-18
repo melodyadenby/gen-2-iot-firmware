@@ -151,8 +151,7 @@ void interruptibleDelay(unsigned long ms);
 
 // Hardware watchdog handler
 void hardwareWatchdogHandler() {
-  Serial.printlnf("HARDWARE WATCHDOG RESET at uptime %lu ms", millis());
-  Serial.flush();
+  Log.info("HARDWARE WATCHDOG RESET at uptime %lu ms", millis());
   delay(100);
   System.reset(RESET_NO_WAIT);
 }
@@ -161,11 +160,11 @@ void setup() {
   initializeSystem();
 
   // Log startup time and reset reason IMMEDIATELY
-  Serial.printlnf("=== DEVICE STARTUP AT %lu ms ===", millis());
-  Serial.printlnf("Reset reason: %d, Reset data: %d", System.resetReason(),
+  Log.info("=== DEVICE STARTUP AT %lu ms ===", millis());
+  Log.info("Reset reason: %d, Reset data: %d", System.resetReason(),
                   System.resetReasonData());
-  Serial.printlnf("System version: %s", System.version().c_str());
-  Serial.printlnf("Free memory: %lu bytes", System.freeMemory());
+  Log.info("System version: %s", System.version().c_str());
+  Log.info("Free memory: %lu bytes", System.freeMemory());
 
 
   initializeArchitecture();
@@ -177,7 +176,7 @@ void setup() {
     // Initialize hardware watchdog - 20 second timeout
     hardwareWatchdog =
         new ApplicationWatchdog(20000, hardwareWatchdogHandler, 1536);
-    Serial.printlnf("Hardware ApplicationWatchdog initialized (20s timeout)");
+    Log.info("Hardware ApplicationWatchdog initialized (20s timeout)");
 
     // Initialize processing queue mutex
     os_mutex_create(&processingQueueMutex);
@@ -194,13 +193,13 @@ void setup() {
     canErrorMonitor.lastSuccessTime = millis();
     canErrorMonitor.recoveryAttempts = 0;
 
-    Serial.printlnf("=== SYSTEM STARTUP COMPLETE ===");
-    Serial.printlnf("CAN Error Monitoring: ENABLED");
-    Serial.printlnf("Hardware Watchdog: ENABLED (20s timeout)");
-    Serial.printlnf("Recovery System: READY");
+    Log.info("=== SYSTEM STARTUP COMPLETE ===");
+    Log.info("CAN Error Monitoring: ENABLED");
+    Log.info("Hardware Watchdog: ENABLED (20s timeout)");
+    Log.info("Recovery System: READY");
   } else {
-    Serial.printlnf("=== STARTUP FAILED - CAN ERROR DETECTED ===");
-    Serial.printlnf("Uptime before CAN error reset: %lu ms", millis());
+    Log.warn("=== STARTUP FAILED - CAN ERROR DETECTED ===");
+    Log.warn("Uptime before CAN error reset: %lu ms", millis());
     resetDevice("CAN error during startup");
   }
 }
@@ -214,7 +213,7 @@ void loop() {
 
   // Check if cloud command already pending
   if (pendingCloudCommand) {
-    Serial.println("Cloud command pending - priority processing");
+    Log.info("Cloud command pending - priority processing");
     return;  // Skip everything else this iteration
   }
 
@@ -223,7 +222,7 @@ void loop() {
 
   // Detect if main loop is running too slowly (potential freeze indicator)
   if (lastLoopTime > 0 && (currentTime - lastLoopTime) > 5000) {
-    Serial.printlnf(
+    Log.info(
         "WARNING: Main loop delay detected: %lu ms (uptime: %lu ms)",
         currentTime - lastLoopTime, currentTime);
   }
@@ -271,26 +270,24 @@ void initializeArchitecture() {
   portFlagHandler =
       new PortFlagHandler(nullptr); // Will use global port state functions
 
-  Serial.printlnf("Architecture components initialized");
+  Log.info("Architecture components initialized");
 }
 
 void initializeSystem() {
-  Serial.begin(115200);
-  while (!Serial)
-    ;
+
   // delay(2000);
 
   // Track boot times using retained memory
   bootCounter++;
   uint32_t currentTime = Time.now();
-  Serial.printlnf("=== BOOT #%lu at Unix time %lu ===", bootCounter,
+  Log.info("=== BOOT #%lu at Unix time %lu ===", bootCounter,
                   currentTime);
 
   if (bootCounter > 1 && lastBootTime > 0) {
     uint32_t timeBetweenBoots = currentTime - lastBootTime;
-    Serial.printlnf("Time since last boot: %lu seconds", timeBetweenBoots);
+    Log.info("Time since last boot: %lu seconds", timeBetweenBoots);
     if (timeBetweenBoots < 30) {
-      Serial.printlnf("WARNING: Rapid restart detected! (%lu seconds)",
+      Log.info("WARNING: Rapid restart detected! (%lu seconds)",
                       timeBetweenBoots);
     }
   }
@@ -301,10 +298,10 @@ void initializeSystem() {
   initializeCredentials();
   initializeLedger();
 
-  Serial.printlnf("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
-  Serial.printlnf("Device ID: %s", Particle.deviceID().c_str());
-  Serial.printlnf("Environment: %s", getCurrentEnvironment());
-  Serial.printlnf("System initialized");
+  Log.info("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
+  Log.info("Device ID: %s", Particle.deviceID().c_str());
+  Log.info("Environment: %s", getCurrentEnvironment());
+  Log.info("System initialized");
 }
 void initializeLedger() {
 
@@ -347,7 +344,7 @@ void initializeHardware() {
 
   // CRITICAL: Clear ALL buffers BEFORE entering normal mode
   // This prevents startup overflow when all ports are docked and sending VINs
-  Serial.println("Pre-startup: Clearing any existing CAN messages before normal mode...");
+  Log.info("Pre-startup: Clearing any existing CAN messages before normal mode...");
 
   can_frame dummyMsg;
   int preStartupCleared = 0;
@@ -362,7 +359,7 @@ void initializeHardware() {
   mcp2515.clearInterrupts();
 
   if (preStartupCleared > 0) {
-    Serial.printlnf("Pre-startup cleared %d existing messages", preStartupCleared);
+    Log.info("Pre-startup cleared %d existing messages", preStartupCleared);
   }
 
   err = mcp2515.setNormalMode();
@@ -371,10 +368,10 @@ void initializeHardware() {
     return;
   }
 
-  Serial.println("CAN controller: Normal mode OK!");
+  Log.info("CAN controller: Normal mode OK!");
 
   // Extended startup drain to prevent overflow during vulnerable period
-  Serial.println("Starting extended startup drain...");
+  Log.info("Starting extended startup drain...");
   unsigned long drainStart = millis();
   int totalDrained = 0;
 
@@ -392,13 +389,13 @@ void initializeHardware() {
     uint8_t flags = mcp2515.getErrorFlags();
     if (flags & 0xC0) {  // RX0OVR or RX1OVR
       mcp2515.clearRXnOVR();
-      Serial.printlnf("Prevented overflow during drain (total: %d)", totalDrained);
+      Log.info("Prevented overflow during drain (total: %d)", totalDrained);
     }
 
     delay(50);  // 50ms between cycles
   }
 
-  Serial.printlnf("Extended drain complete: cleared %d messages over 10 seconds", totalDrained);
+  Log.info("Extended drain complete: cleared %d messages over 10 seconds", totalDrained);
 
   pinMode(CAN_INT, INPUT_PULLUP);
   // NOTE: CAN interrupt will be attached after connection is established
@@ -409,7 +406,7 @@ void initializeHardware() {
   lastInterruptCheck = millis();
   interruptHealthy = true;
 
-  Serial.printlnf("Hardware initialized (CAN interrupt pending)");
+  Log.info("Hardware initialized (CAN interrupt pending)");
 }
 
 void initializeParticle() {
@@ -442,7 +439,7 @@ void initializeParticle() {
   setLightRed();
   waitFor(Particle.connected, 120000);
   if (!Particle.connected()) {
-    Serial.printlnf("Failed to connect to Particle Cloud");
+    Log.info("Failed to connect to Particle Cloud");
     resetDevice("");
   }
 
@@ -450,13 +447,13 @@ void initializeParticle() {
   // logResetReason();
 
   setLightBlue();
-  Serial.printlnf("Particle Cloud connected");
+  Log.info("Particle Cloud connected");
 }
 
 void handleSystemLoop() {
   // Handle CAN recovery IMMEDIATELY - before anything else
   if (can_recovery_needed) {
-    Serial.printlnf("EMERGENCY: Executing CAN recovery due to error cascade");
+    Log.info("EMERGENCY: Executing CAN recovery due to error cascade");
     performCANRecovery();
     delay(1000); // Give recovery time to complete
     return;      // Exit immediately, don't continue with normal operations
@@ -471,7 +468,7 @@ void handleSystemLoop() {
 
   // Check for credential fetch failures
   if (attemptedCredentialsFetchCount > MAX_CREDENTIAL_ATTEMPTS) {
-    Serial.printlnf("Failed to fetch credentials after max attempts");
+    Log.info("Failed to fetch credentials after max attempts");
     blinkIdentityError();
     return;
   }
@@ -567,7 +564,7 @@ void handlePortDataRequests() {
 
     if (canErrorMonitor.consecutiveErrors == 0 &&
         millis() - pollingDisabledTime > waitTime) {
-      Serial.printlnf(
+      Log.info(
           "Re-enabling port polling - errors have cleared (waited %lu ms)",
           waitTime);
       pollingDisabled = false;
@@ -596,7 +593,7 @@ void handlePortDataRequests() {
     if (current_time - last_port_check_reset >= PORT_CHECK_INTERVAL) {
       markPortsUnpolled();
       last_port_check_reset = current_time; // Update the last reset time
-      Serial.println("🚨 DID_PORT_CHECK reset for all ports 🚨");
+      Log.info("🚨 DID_PORT_CHECK reset for all ports 🚨");
 
       // Force start new cycle when ports are reset
       polling_cycle_active = false;
@@ -607,7 +604,7 @@ void handlePortDataRequests() {
     if (!polling_cycle_active) {
       polling_cycle_active = true;
       current_poll_port = 1; // NOW set to port 1 when actually starting
-      Serial.printlnf(
+      Log.info(
           "Starting new polling cycle for all ports - starting at port %d",
           current_poll_port);
     }
@@ -708,7 +705,7 @@ void handlePortDataRequests() {
 
   // Check if portFlagHandler is available
   if (!portFlagHandler) {
-    Serial.printlnf("portFlagHandler not initialized");
+    Log.info("portFlagHandler not initialized");
     return;
   }
 
@@ -723,7 +720,7 @@ void handlePortDataRequests() {
   // Safety check - if current_poll_port is 0, set it to 1
   if (current_poll_port == 0) {
     current_poll_port = 1;
-    Serial.printlnf("WARNING: current_poll_port was 0, resetting to 1");
+    Log.info("WARNING: current_poll_port was 0, resetting to 1");
   }
 
   // Find next port that needs polling
@@ -752,7 +749,7 @@ void handlePortDataRequests() {
 
       // PREVENTIVE: Skip VIN requests if too many are already active
       if (isVINRequest && activeVINRequests >= MAX_CONCURRENT_VINS) {
-        Serial.printlnf("PREVENTIVE: Skipping VIN request for port %d - %d "
+        Log.info("PREVENTIVE: Skipping VIN request for port %d - %d "
                         "already active (max %d)",
                         current_poll_port, activeVINRequests,
                         MAX_CONCURRENT_VINS);
@@ -764,7 +761,7 @@ void handlePortDataRequests() {
       bool success = portFlagHandler->sendGetPortData(current_poll_port);
 
       if (success) {
-        Serial.printlnf("Polled port %d", current_poll_port);
+        Log.info("Polled port %d", current_poll_port);
         markPortPolled(current_poll_port);
         // Reset failure count on success
         portFailureCount[current_poll_port] = 0;
@@ -785,7 +782,7 @@ void handlePortDataRequests() {
             }
           }
 
-          Serial.printlnf("VIN request sent to port %d - slot reserved, %d "
+          Log.info("VIN request sent to port %d - slot reserved, %d "
                           "slots active",
                           current_poll_port, activeVINRequests + 1);
         }
@@ -813,12 +810,12 @@ void handlePortDataRequests() {
 
       } else {
         portFailureCount[current_poll_port]++;
-        Serial.printlnf("Failed to poll port %d (failures: %d)",
+        Log.info("Failed to poll port %d (failures: %d)",
                         current_poll_port, portFailureCount[current_poll_port]);
 
         // Skip this port if it's failing repeatedly
         if (portFailureCount[current_poll_port] >= 3) {
-          Serial.printlnf(
+          Log.info(
               "Port %d has failed %d times - skipping for this cycle",
               current_poll_port, portFailureCount[current_poll_port]);
           markPortPolled(current_poll_port); // Mark as "polled" to skip it
@@ -829,7 +826,7 @@ void handlePortDataRequests() {
 
         // If too many consecutive errors, trigger IMMEDIATE recovery
         if (canErrorMonitor.consecutiveErrors >= 3) {
-          Serial.printlnf("CRITICAL: Immediate CAN recovery needed");
+          Log.info("CRITICAL: Immediate CAN recovery needed");
           can_recovery_needed = true;
           pollingDisabled = true;
           pollingDisabledTime = millis();
@@ -893,7 +890,7 @@ void handlePortDataRequests() {
     current_poll_port = 1; // Reset to port 1 for next cycle
     last_function_run_time = current_time;
     first_run = false;
-    Serial.printlnf(
+    Log.info(
         "Port polling cycle complete - all ports polled - next cycle in %lu ms",
         PORT_CHECK_INTERVAL);
   }
@@ -919,7 +916,7 @@ void updateSystemStatus() {
     if (!wasConnectedBefore) {
       justConnectedFlag = true;
       wasConnectedBefore = true;
-      Serial.printlnf("First successful connection detected - immediate port "
+      Log.info("First successful connection detected - immediate port "
                       "polling enabled");
 
       // Prepare CAN system and attach interrupt with clean state
@@ -937,7 +934,7 @@ void updateSystemStatus() {
 // ========================================
 
 void canThread() {
-  Serial.printlnf("CAN thread started - lightweight message transfer only");
+  Log.info("CAN thread started - lightweight message transfer only");
 
   while (true) {
     // Simple job: move messages from interrupt queue to processing queue
@@ -985,7 +982,7 @@ void transferMessagesToProcessingQueue() {
         processingQueueCount++;
         transferred++;
       } else {
-        Serial.println("WARNING: Processing queue full!");
+        Log.info("WARNING: Processing queue full!");
       }
       os_mutex_unlock(processingQueueMutex);
     }
@@ -1056,19 +1053,19 @@ void port_request_thread() {
 void processCANMessage(const can_frame &rawMessage) {
   // Check for corrupted CAN ID (negative or excessively large values)
   if ((int32_t)rawMessage.can_id < 0 || rawMessage.can_id > 16777215) {
-    Serial.printlnf("CRITICAL: Corrupted CAN ID detected: %ld (0x%lX)",
+    Log.error("CRITICAL: Corrupted CAN ID detected: %ld (0x%lX)",
                     (long)rawMessage.can_id, (unsigned long)rawMessage.can_id);
     logCANError(0xF, "corrupted_can_id");
 
     // This indicates controller corruption - trigger immediate recovery
-    Serial.printlnf("CAN controller corruption detected - triggering recovery");
+    Log.info("CAN controller corruption detected - triggering recovery");
     can_recovery_needed = true;
     return;
   }
 
   // Check for invalid data length
   if (rawMessage.can_dlc > 8) {
-    Serial.printlnf("CRITICAL: Invalid CAN DLC: %d", rawMessage.can_dlc);
+    Log.error("CRITICAL: Invalid CAN DLC: %d", rawMessage.can_dlc);
     logCANError(0xE, "invalid_dlc");
     can_recovery_needed = true;
     return;
@@ -1078,7 +1075,7 @@ void processCANMessage(const can_frame &rawMessage) {
   ParsedCANMessage parsedMsg = canProcessor.parseMessage(rawMessage);
 
   // 2. Log the message for debugging
-  Serial.printlnf("CAN message from port %d: type=%s, valid=%s",
+  Log.info("CAN message from port %d: type=%s, valid=%s",
                   parsedMsg.sourcePort,
                   canProcessor.getMessageTypeString(parsedMsg.messageType),
                   parsedMsg.isValid ? "yes" : "no");
@@ -1092,7 +1089,7 @@ void processCANMessage(const can_frame &rawMessage) {
     lastInterruptTime = millis();
     interruptHealthy = true;
   } else if (!parsedMsg.isValid) {
-    Serial.printlnf("Invalid CAN message received from port %d",
+    Log.warn("Invalid CAN message received from port %d",
                     parsedMsg.sourcePort);
     logCANError(-1, "message_parsing");
   }
@@ -1171,7 +1168,7 @@ void can_interrupt() {
 
       // Log periodically, not every drop
       if (millis() - lastDropLog > 5000) {
-        Serial.printlnf("Queue full - dropped %lu new messages (keeping existing)",
+        Log.info("Queue full - dropped %lu new messages (keeping existing)",
                        droppedMessages);
         logCANError(-2, "queue_overflow");
         lastDropLog = millis();
@@ -1193,7 +1190,7 @@ void can_interrupt() {
 // ========================================
 
 void performCANRecovery() {
-  Serial.printlnf("=== PERFORMING EMERGENCY CAN RECOVERY ===");
+  Log.info("=== PERFORMING EMERGENCY CAN RECOVERY ===");
 
   // Stop ALL CAN operations immediately
   CAN_ERROR = true;
@@ -1230,12 +1227,12 @@ void performCANRecovery() {
     // If it's been a long time since last successful recovery, allow reset of
     // attempts
     if (timeSinceLastSuccess > RECOVERY_SUCCESS_RESET_TIME) {
-      Serial.printlnf("Resetting recovery attempts - %lu ms since last success",
+      Log.info("Resetting recovery attempts - %lu ms since last success",
                       timeSinceLastSuccess);
       canErrorMonitor.recoveryAttempts = 1; // Reset but count this attempt
       canErrorMonitor.adaptiveMode = true;  // Enable adaptive recovery
     } else {
-      Serial.printlnf("CRITICAL: Max recovery attempts (%d) exceeded - forcing "
+      Log.info("CRITICAL: Max recovery attempts (%d) exceeded - forcing "
                       "device reset",
                       MAX_RECOVERY_ATTEMPTS);
       delay(100);
@@ -1244,7 +1241,7 @@ void performCANRecovery() {
     }
   }
 
-  Serial.printlnf("CAN Recovery attempt %d of %d",
+  Log.info("CAN Recovery attempt %d of %d",
                   canErrorMonitor.recoveryAttempts, MAX_RECOVERY_ATTEMPTS);
 
   // Adaptive recovery delay based on attempt number
@@ -1254,17 +1251,17 @@ void performCANRecovery() {
         1000 + (canErrorMonitor.recoveryAttempts * 500); // Progressive delay
     canErrorMonitor.extendedRecoveryDelay =
         recoveryDelay * 2; // Extended pause after recovery
-    Serial.printlnf("Adaptive recovery mode - using %lu ms delay",
+    Log.info("Adaptive recovery mode - using %lu ms delay",
                     recoveryDelay);
   }
 
   delay(recoveryDelay); // Give system time to stabilize
 
   // Reset MCP2515 controller
-  Serial.printlnf("Resetting MCP2515 controller...");
+  Log.info("Resetting MCP2515 controller...");
   int err = mcp2515.reset();
   if (err != mcp2515.ERROR_OK) {
-    Serial.printlnf("CRITICAL: MCP2515 reset failed - forcing device reset");
+    Log.info("CRITICAL: MCP2515 reset failed - forcing device reset");
     delay(100);
     resetDevice("MCP2515 reset failed");
     return;
@@ -1275,7 +1272,7 @@ void performCANRecovery() {
   // Reconfigure controller
   err = mcp2515.setBitrate(CAN_125KBPS, MCP_8MHZ);
   if (err != mcp2515.ERROR_OK) {
-    Serial.printlnf(
+    Log.info(
         "CRITICAL: MCP2515 bitrate config failed - forcing device reset");
     delay(100);
     resetDevice("MCP2515 config failed");
@@ -1286,7 +1283,7 @@ void performCANRecovery() {
 
   err = mcp2515.setNormalMode();
   if (err != mcp2515.ERROR_OK) {
-    Serial.printlnf(
+    Log.info(
         "CRITICAL: MCP2515 normal mode failed - forcing device reset");
     delay(100);
     resetDevice("MCP2515 mode failed");
@@ -1301,11 +1298,11 @@ void performCANRecovery() {
     // Use prepareCANForInterrupt to ensure clean state
     prepareCANForInterrupt();
     canInterruptAttached = true; // Re-enable polling after recovery
-    Serial.printlnf(
+    Log.info(
         "CAN recovery complete - interrupt re-enabled with clean state");
   } else {
     canInterruptAttached = false; // Disable polling until connected
-    Serial.printlnf(
+    Log.info(
         "CAN interrupt pending - will attach after connection established");
   }
 
@@ -1318,8 +1315,8 @@ void performCANRecovery() {
   canErrorMonitor.lastSuccessfulRecovery = millis();
   CAN_ERROR = false;
 
-  Serial.printlnf("=== CAN RECOVERY COMPLETED SUCCESSFULLY ===");
-  Serial.printlnf("Recovery attempt %d succeeded",
+  Log.info("=== CAN RECOVERY COMPLETED SUCCESSFULLY ===");
+  Log.info("Recovery attempt %d succeeded",
                   canErrorMonitor.recoveryAttempts);
 
   // Extended pause in adaptive mode for system stabilization
@@ -1327,7 +1324,7 @@ void performCANRecovery() {
   if (canErrorMonitor.adaptiveMode &&
       canErrorMonitor.extendedRecoveryDelay > 1000) {
     postRecoveryDelay = canErrorMonitor.extendedRecoveryDelay;
-    Serial.printlnf("Extended post-recovery delay: %lu ms", postRecoveryDelay);
+    Log.info("Extended post-recovery delay: %lu ms", postRecoveryDelay);
   }
 
   delay(postRecoveryDelay);
@@ -1340,22 +1337,22 @@ void logCANError(int errorCode, const char *operation) {
   canErrorMonitor.lastErrorTime = currentTime;
   canErrorMonitor.consecutiveErrors++;
 
-  Serial.printlnf("CAN Error #%lu: %s failed with code %d (consecutive: %d)",
+  Log.info("CAN Error #%lu: %s failed with code %d (consecutive: %d)",
                   canErrorMonitor.totalErrors, operation, errorCode,
                   canErrorMonitor.consecutiveErrors);
 
   // Check for specific error codes that indicate controller corruption
   if (errorCode == 0xA || errorCode == 10 || errorCode == 0xF ||
       errorCode == 15) {
-    Serial.printlnf("CRITICAL: Detected ERROR_A/ERROR_F - MCP2515 controller "
+    Log.info("CRITICAL: Detected ERROR_A/ERROR_F - MCP2515 controller "
                     "corruption!");
-    Serial.printlnf(
+    Log.info(
         "Triggering immediate CAN recovery to prevent system freeze");
     can_recovery_needed = true;
 
     // If we've seen these errors multiple times, force device reset
     if (canErrorMonitor.consecutiveErrors >= 2) {
-      Serial.printlnf(
+      Log.info(
           "Multiple controller corruption errors - forcing device reset");
       delay(100);
       resetDevice("MCP2515 controller corruption");
@@ -1365,7 +1362,7 @@ void logCANError(int errorCode, const char *operation) {
 
   // Lower threshold for faster recovery during error cascades
   if (canErrorMonitor.consecutiveErrors >= 3) {
-    Serial.printlnf("Fast recovery trigger - %d consecutive errors",
+    Log.info("Fast recovery trigger - %d consecutive errors",
                     canErrorMonitor.consecutiveErrors);
     can_recovery_needed = true;
   }
@@ -1381,7 +1378,7 @@ void logCANError(int errorCode, const char *operation) {
 void resetCANSuccessCounter() {
   // Reset consecutive error count on successful operation
   if (canErrorMonitor.consecutiveErrors > 0) {
-    Serial.printlnf("CAN operation successful - resetting error count");
+    Log.info("CAN operation successful - resetting error count");
     canErrorMonitor.consecutiveErrors = 0;
   }
 
@@ -1395,7 +1392,7 @@ void resetCANSuccessCounter() {
 
     // Only reset attempts if we've had sustained success (30 seconds)
     if (timeSinceRecovery > 30000) {
-      Serial.printlnf("Resetting recovery attempt counter after sustained "
+      Log.info("Resetting recovery attempt counter after sustained "
                       "success (%lu ms)",
                       timeSinceRecovery);
       canErrorMonitor.recoveryAttempts = 0;
@@ -1428,10 +1425,10 @@ void reportCANError(int err, const char *operation, bool report) {
 
   if (err != 0) {
     char ret[150];
-    Serial.printlnf("CAN BUS ERROR %s", operation);
+    Log.info("CAN BUS ERROR %s", operation);
     ReturnErrorString(err, ret, sizeof(ret));
     sprintf(can_err_msg, "CAN BUS ERROR %s: %s", operation, ret);
-    Serial.printlnf("%s", can_err_msg);
+    Log.info("%s", can_err_msg);
 
     // Log this as a CAN error for monitoring
     logCANError(err, operation);
@@ -1440,14 +1437,14 @@ void reportCANError(int err, const char *operation, bool report) {
 
 int resetDevice(String command) {
   if (command.length() > 0) {
-    Serial.printlnf("Device reset requested. Reason: %s", command.c_str());
-    Serial.printlnf("Free memory before reset: %lu bytes", System.freeMemory());
-    Serial.printlnf("System uptime: %lu ms", millis());
-    Serial.printlnf("Cellular connected: %s",
+    Log.info("Device reset requested. Reason: %s", command.c_str());
+    Log.info("Free memory before reset: %lu bytes", System.freeMemory());
+    Log.info("System uptime: %lu ms", millis());
+    Log.info("Cellular connected: %s",
                     CELLULAR_CONNECTED ? "yes" : "no");
-    Serial.printlnf("Credentials valid: %s",
+    Log.info("Credentials valid: %s",
                     areCredentialsValid() ? "yes" : "no");
-    Serial.printlnf("CAN errors in last period: %d", can_error_count);
+    Log.info("CAN errors in last period: %d", can_error_count);
   }
   System.reset();
   return 1;
@@ -1490,7 +1487,7 @@ void logDebugInfo(const char *checkpoint) {
   static unsigned long lastLogTime = 0;
   unsigned long now = millis();
 
-  Serial.printlnf("[%lu ms] Checkpoint: %s (Delta: %lu ms)", now, checkpoint,
+  Log.info("[%lu ms] Checkpoint: %s (Delta: %lu ms)", now, checkpoint,
                   now - lastLogTime);
 
   lastLogTime = now;
@@ -1500,8 +1497,8 @@ void logResetReason() {
   int reason = System.resetReason();
   int reasonData = System.resetReasonData();
 
-  Serial.printlnf("RESET REASON: %d", reason);
-  Serial.printlnf("RESET REASON DATA: %d", reasonData);
+  Log.info("RESET REASON: %d", reason);
+  Log.info("RESET REASON DATA: %d", reasonData);
 
   char buffer[100];
   snprintf(buffer, sizeof(buffer), "Reason: %d, Data: %d", reason, reasonData);
@@ -1514,7 +1511,7 @@ void checkSystemHealth() {
   unsigned long uptime = millis();
 
   if (freeMemory < 1000) {
-    Serial.printlnf("Low memory warning: %lu bytes", freeMemory);
+    Log.info("Low memory warning: %lu bytes", freeMemory);
   }
 
   static unsigned long lastHealthCheck = 0;
@@ -1526,28 +1523,28 @@ void checkSystemHealth() {
                  (totalMessagesProcessed + totalMessagesDropped);
     }
 
-    Serial.printlnf("System Health - Uptime: %lu min, Free Memory: %lu bytes",
+    Log.info("System Health - Uptime: %lu min, Free Memory: %lu bytes",
                     uptime / 60000, freeMemory);
-    Serial.printlnf("Interrupt Queue: %d/%d | Processing Queue: %d/%d | Max Depth: %lu",
+    Log.info("Interrupt Queue: %d/%d | Processing Queue: %d/%d | Max Depth: %lu",
                     messageCount, CAN_QUEUE_SIZE,
                     processingQueueCount, PROCESSING_QUEUE_SIZE,
                     maxQueueDepth);
-    Serial.printlnf("Messages - Processed: %lu | Dropped: %lu (%.1f%%)",
+    Log.info("Messages - Processed: %lu | Dropped: %lu (%.1f%%)",
                     totalMessagesProcessed, totalMessagesDropped, dropRate);
-    Serial.printlnf("Cellular Status: %s",
+    Log.info("Cellular Status: %s",
                     CELLULAR_CONNECTED ? "connected" : "disconnected");
-    Serial.printlnf("Credentials: %s", getCredentialsStatus().c_str());
-    Serial.printlnf("CAN Errors (last minute): %d", can_error_count);
-    Serial.printlnf("CAN Recovery needed: %s",
+    Log.info("Credentials: %s", getCredentialsStatus().c_str());
+    Log.info("CAN Errors (last minute): %d", can_error_count);
+    Log.info("CAN Recovery needed: %s",
                     can_recovery_needed ? "yes" : "no");
 
     // Warn if drop rate is concerning
     if (dropRate > 5.0) {
-      Serial.printlnf("WARNING: High message drop rate detected: %.1f%%", dropRate);
+      Log.info("WARNING: High message drop rate detected: %.1f%%", dropRate);
     }
 
     if (portFlagHandler) {
-      Serial.printlnf("Ports with pending flags: %d",
+      Log.info("Ports with pending flags: %d",
                       portFlagHandler->getPendingPortsCount());
     }
 
@@ -1556,8 +1553,8 @@ void checkSystemHealth() {
 }
 
 void emergencyReset(const char *reason) {
-  Serial.printlnf("EMERGENCY RESET: %s", reason);
-  Serial.printlnf("Error Stats - Consecutive: %d, Total: %lu",
+  Log.info("EMERGENCY RESET: %s", reason);
+  Log.info("Error Stats - Consecutive: %d, Total: %lu",
                   canErrorMonitor.consecutiveErrors,
                   canErrorMonitor.totalErrors);
   delay(200); // Ensure message is sent
@@ -1584,7 +1581,7 @@ void internetCheckThread() {
 
       if (!CELLULAR_CONNECTED) {
         if (!did_disconnect) { // Only set disconnectTime on FIRST disconnect
-          Serial.println("Internet disconnected - starting recovery timeline");
+          Log.info("Internet disconnected - starting recovery timeline");
           did_disconnect = true;
           disconnectTime = millis();
         }
@@ -1597,7 +1594,7 @@ void internetCheckThread() {
         // Hard reset after 1 minute
         if (disconnectedDuration > INTERNET_DISCONNECT_RESET_TIMEOUT) {
 
-          Serial.printlnf("RESET: Internet disconnected for %lu ms - "
+          Log.info("RESET: Internet disconnected for %lu ms - "
                           "performing device reset",
                           disconnectedDuration);
           System.reset(RESET_NO_WAIT);
@@ -1605,7 +1602,7 @@ void internetCheckThread() {
       } else {
         if (did_disconnect) {
           // Connection restored
-          Serial.printlnf("Internet reconnected after %lu ms offline",
+          Log.info("Internet reconnected after %lu ms offline",
                           millis() - disconnectTime);
         }
         disconnectTime = 0;
@@ -1624,7 +1621,7 @@ void canHealthMonitorThread() {
       1000; // Check every second during crisis
   const unsigned long MAIN_LOOP_TIMEOUT = 20000; // 20 seconds max
 
-  Serial.println("CAN Health Monitor thread started");
+  Log.info("CAN Health Monitor thread started");
 
   while (true) {
     unsigned long currentTime = millis();
@@ -1639,7 +1636,7 @@ void canHealthMonitorThread() {
       // Monitor CAN error rate
       if (currentTime - last_can_error_time > CAN_ERROR_RESET_INTERVAL) {
         if (can_error_count > 0) {
-          Serial.printlnf("Resetting CAN error count (was %d)",
+          Log.info("Resetting CAN error count (was %d)",
                           can_error_count);
         }
         can_error_count = 0;
@@ -1648,7 +1645,7 @@ void canHealthMonitorThread() {
 
       // Check if error rate is too high
       if (can_error_count > MAX_CAN_ERRORS_PER_MINUTE) {
-        Serial.printlnf("CAN error rate too high (%d errors/minute), "
+        Log.info("CAN error rate too high (%d errors/minute), "
                         "triggering recovery",
                         can_error_count);
         can_recovery_needed = true;
@@ -1663,7 +1660,7 @@ void canHealthMonitorThread() {
       // Check if we have consecutive CAN errors with lower threshold
       if (canErrorMonitor.consecutiveErrors >= 3) {
         if (!canErrorMonitor.inRecoveryMode) {
-          Serial.printlnf("CAN Error Threshold Reached: %d consecutive errors",
+          Log.info("CAN Error Threshold Reached: %d consecutive errors",
                           canErrorMonitor.consecutiveErrors);
           can_recovery_needed = true;
           canErrorMonitor.inRecoveryMode = true;
@@ -1675,7 +1672,7 @@ void canHealthMonitorThread() {
       // errors
       if (currentTime - canErrorMonitor.lastErrorTime > CAN_ERROR_WINDOW) {
         if (canErrorMonitor.consecutiveErrors > 0) {
-          Serial.printlnf("CAN Error Window Expired - Resetting "
+          Log.info("CAN Error Window Expired - Resetting "
                           "consecutive error count");
           canErrorMonitor.consecutiveErrors = 0;
         }
@@ -1701,7 +1698,7 @@ void canHealthMonitorThread() {
         // healthy
         if (currentFlags == 0 && canErrorMonitor.consecutiveErrors == 0) {
           // CAN hardware looks fine, maybe just need to restart polling
-          Serial.println("No recent CAN success but hardware looks healthy - "
+          Log.info("No recent CAN success but hardware looks healthy - "
                          "restarting polling");
           markPortsUnpolled(); // Gentle restart of port polling
           canErrorMonitor.lastSuccessTime = millis(); // Reset timer
@@ -1713,12 +1710,12 @@ void canHealthMonitorThread() {
             lastGentleRestart = currentTime;
           } else {
             // Second gentle restart failed, more serious issue
-            Serial.println("Gentle restart failed, CAN may have deeper issues");
+            Log.info("Gentle restart failed, CAN may have deeper issues");
             emergencyReset("CAN operations failed even after gentle restart");
           }
         } else {
           // Actual CAN hardware errors detected
-          Serial.printlnf("CAN hardware errors detected (flags: 0x%02X)",
+          Log.info("CAN hardware errors detected (flags: 0x%02X)",
                           currentFlags);
           emergencyReset("No successful CAN operations with hardware errors");
         }
@@ -1728,7 +1725,7 @@ void canHealthMonitorThread() {
 
       // Check CAN error rate with lower threshold
       if (canErrorMonitor.consecutiveErrors >= 6) {
-        Serial.printlnf("CRITICAL: Excessive CAN errors (%d), forcing reset",
+        Log.info("CRITICAL: Excessive CAN errors (%d), forcing reset",
                         canErrorMonitor.consecutiveErrors);
         delay(100);
         emergencyReset("Excessive CAN errors");
@@ -1736,7 +1733,7 @@ void canHealthMonitorThread() {
 
       // Check for queue overflow conditions
       if (queueOverflow) {
-        Serial.println("CAN message queue overflow detected");
+        Log.info("CAN message queue overflow detected");
         queueOverflow = false; // Reset flag
         logCANError(-3, "persistent_queue_overflow");
       }
@@ -1748,7 +1745,7 @@ void canHealthMonitorThread() {
         static int lastQueueCount = 0;
 
         if (currentTime - lastWarningTime > 10000) { // Log every 10 seconds
-          Serial.printlnf("WARNING: CAN queue filling up (%d/%d messages)",
+          Log.info("WARNING: CAN queue filling up (%d/%d messages)",
                           messageCount, CAN_QUEUE_SIZE);
           lastWarningTime = currentTime;
         }
@@ -1758,7 +1755,7 @@ void canHealthMonitorThread() {
             messageCount > (CAN_QUEUE_SIZE * 4 / 5)) {
           stuckCount++;
           if (stuckCount > 3) {
-            Serial.printlnf("CRITICAL: Queue appears stuck at %d messages - may need recovery",
+            Log.info("CRITICAL: Queue appears stuck at %d messages - may need recovery",
                             messageCount);
             // Instead of clearing, try to trigger recovery
             canErrorMonitor.consecutiveErrors++;
@@ -1774,7 +1771,7 @@ void canHealthMonitorThread() {
       if (canErrorMonitor.rxOverflowCount > 0) {
         unsigned long overflowDuration =
             currentTime - canErrorMonitor.firstRxOverflowTime;
-        Serial.printlnf("RX Overflow Status: %d overflows in %lu ms (last "
+        Log.info("RX Overflow Status: %d overflows in %lu ms (last "
                         "clear: %lu ms ago)",
                         canErrorMonitor.rxOverflowCount, overflowDuration,
                         currentTime - canErrorMonitor.lastRxOverflowClear);
@@ -1783,7 +1780,7 @@ void canHealthMonitorThread() {
         // 10 seconds and system is healthy)
         if (currentTime - canErrorMonitor.lastRxOverflowClear > 10000 &&
             canErrorMonitor.consecutiveErrors == 0) {
-          Serial.printlnf(
+          Log.info(
               "RX overflow resolved - resetting tracking (was %d overflows)",
               canErrorMonitor.rxOverflowCount);
           canErrorMonitor.rxOverflowCount = 0;
@@ -1793,7 +1790,7 @@ void canHealthMonitorThread() {
 
       // Check for invalid CAN messages (indicates controller corruption)
       if (canErrorMonitor.consecutiveErrors >= 3) {
-        Serial.printlnf(
+        Log.info(
             "CAN controller corruption suspected (%d consecutive errors)",
             canErrorMonitor.consecutiveErrors);
       }
@@ -1804,7 +1801,7 @@ void canHealthMonitorThread() {
       if ((canErrorMonitor.consecutiveErrors > 0 ||
            canErrorMonitor.inRecoveryMode) &&
           currentTime - lastHealthLog > 10000) {
-        Serial.printlnf(
+        Log.info(
             "CAN Health: Errors=%d, Attempts=%d, Recovering=%s, "
             "HW_Flags=0x%02X",
             canErrorMonitor.consecutiveErrors, canErrorMonitor.recoveryAttempts,
@@ -1817,7 +1814,7 @@ void canHealthMonitorThread() {
       // if (currentFlags != 0 && currentTime - lastFlagLog > 30000) //
       // Every 30 seconds
       // {
-      //   Serial.printlnf("MCP2515 hardware error flags detected: 0x%02X",
+      //   Log.info("MCP2515 hardware error flags detected: 0x%02X",
       //   currentFlags); getCANErrorFlags(true); // Debug output with
       //   detailed flag breakdown lastFlagLog = currentTime;
       // }
@@ -1850,7 +1847,7 @@ void checkInterruptHealth() {
     // System not ready - don't monitor interrupts yet
     static bool wasReady = false;
     if (wasReady) {
-      Serial.printlnf("Interrupt health monitoring disabled - system not fully "
+      Log.info("Interrupt health monitoring disabled - system not fully "
                       "operational");
       wasReady = false;
     }
@@ -1861,7 +1858,7 @@ void checkInterruptHealth() {
   // Log when monitoring becomes active
   static bool wasReady = false;
   if (!wasReady) {
-    Serial.printlnf(
+    Log.info(
         "Interrupt health monitoring enabled - system fully operational");
     wasReady = true;
     lastInterruptTime = currentTime; // Start fresh when monitoring begins
@@ -1896,22 +1893,22 @@ void checkInterruptHealth() {
 
     // Check if we can still send (TX working) but not receive (RX/interrupt
     // dead)
-    Serial.printlnf("No CAN message processing for %lu ms (timeout: %lu ms) - "
+    Log.info("No CAN message processing for %lu ms (timeout: %lu ms) - "
                     "checking interrupt system",
                     timeSinceLastInterrupt, dynamicTimeout);
 
     // Check MCP2515 interrupt flags to see if they're stuck
     uint8_t intFlags = mcp2515.getInterrupts();
-    Serial.printlnf("MCP2515 interrupt flags: 0x%02X", intFlags);
+    Log.info("MCP2515 interrupt flags: 0x%02X", intFlags);
 
     if (intFlags != 0) {
-      Serial.printlnf("CRITICAL: MCP2515 has pending interrupts but no message "
+      Log.info("CRITICAL: MCP2515 has pending interrupts but no message "
                       "processing!");
 
       // Try to recover the interrupt system
       recoverInterruptSystem();
     } else {
-      Serial.printlnf(
+      Log.info(
           "MCP2515 no pending interrupts - may be normal quiet period");
       // Update last interrupt time to prevent false alarms during quiet
       // periods
@@ -1921,7 +1918,7 @@ void checkInterruptHealth() {
 }
 
 void recoverInterruptSystem() {
-  Serial.printlnf("=== ATTEMPTING INTERRUPT SYSTEM RECOVERY ===");
+  Log.info("=== ATTEMPTING INTERRUPT SYSTEM RECOVERY ===");
 
   // Detach current interrupt
   detachInterrupt(CAN_INT);
@@ -1945,23 +1942,23 @@ void recoverInterruptSystem() {
     attachInterrupt(CAN_INT, can_interrupt, FALLING);
     delay(100);
     canInterruptAttached = true; // Re-enable polling after interrupt recovery
-    Serial.printlnf("Interrupt re-attached after recovery with cleared state");
+    Log.info("Interrupt re-attached after recovery with cleared state");
   } else {
     canInterruptAttached = false; // Disable polling until connected
-    Serial.printlnf("Interrupt not re-attached - waiting for connection");
+    Log.info("Interrupt not re-attached - waiting for connection");
   }
 
   // Reset interrupt health tracking
   lastInterruptTime = millis();
   interruptHealthy = true;
 
-  Serial.printlnf("Interrupt system recovery completed");
-  Serial.printlnf("Re-attached interrupt on pin %d", CAN_INT);
+  Log.info("Interrupt system recovery completed");
+  Log.info("Re-attached interrupt on pin %d", CAN_INT);
 
   // Test interrupt by reading any pending messages
   uint8_t intFlags = mcp2515.getInterrupts();
   if (intFlags != 0) {
-    Serial.printlnf("Post-recovery: MCP2515 flags: 0x%02X", intFlags);
+    Log.info("Post-recovery: MCP2515 flags: 0x%02X", intFlags);
   }
 }
 
@@ -1980,7 +1977,7 @@ void checkTransmissionReceptionBalance() {
     // System not ready - reset timers to prevent false alarms
     static bool txRxWasReady = false;
     if (txRxWasReady) {
-      Serial.printlnf("TX/RX monitoring disabled - system not ready");
+      Log.info("TX/RX monitoring disabled - system not ready");
       txRxWasReady = false;
     }
     lastTransmissionTime = currentTime;
@@ -1991,7 +1988,7 @@ void checkTransmissionReceptionBalance() {
   // Log when TX/RX monitoring becomes active
   static bool txRxWasReady = false;
   if (!txRxWasReady) {
-    Serial.printlnf("TX/RX monitoring enabled - system ready");
+    Log.info("TX/RX monitoring enabled - system ready");
     txRxWasReady = true;
     lastTransmissionTime = currentTime; // Start fresh when monitoring begins
     lastInterruptTime = currentTime;
@@ -2031,10 +2028,10 @@ void checkTransmissionReceptionBalance() {
     static unsigned long lastInterruptRecovery = 0;
     if (currentTime - lastInterruptRecovery >
         PORT_CHECK_INTERVAL * 6) { // Only once per 6 polling cycles
-      Serial.printlnf("CRITICAL: TX/RX imbalance - TX:%lu ms ago, RX:%lu ms "
+      Log.info("CRITICAL: TX/RX imbalance - TX:%lu ms ago, RX:%lu ms "
                       "ago (timeout: %lu ms)",
                       timeSinceLastTX, timeSinceLastRX, dynamicTxRxTimeout);
-      Serial.printlnf("TX works but RX failed - attempting interrupt recovery");
+      Log.info("TX works but RX failed - attempting interrupt recovery");
       recoverInterruptSystem();
       lastInterruptRecovery = currentTime;
     } else {
@@ -2049,7 +2046,7 @@ void prepareCANForInterrupt() {
   static bool isFirstStartup = true;
 
   if (isFirstStartup) {
-    Serial.println("INITIAL STARTUP: Aggressively clearing ALL CAN buffers...");
+    Log.info("INITIAL STARTUP: Aggressively clearing ALL CAN buffers...");
 
     // 1. Make sure interrupt is detached
     detachInterrupt(CAN_INT);
@@ -2061,7 +2058,7 @@ void prepareCANForInterrupt() {
       mcp2515.clearInterrupts();
       uint8_t errorFlags = mcp2515.getErrorFlags();
       if (errorFlags != 0) {
-        Serial.printlnf("Clearing error flags (pass %d): 0x%02X", i+1, errorFlags);
+        Log.info("Clearing error flags (pass %d): 0x%02X", i+1, errorFlags);
       }
       delay(10);
     }
@@ -2088,7 +2085,7 @@ void prepareCANForInterrupt() {
         break;
       }
 
-      Serial.printlnf("Startup clear pass %d: removed %d messages", passes+1, messagesThisPass);
+      Log.info("Startup clear pass %d: removed %d messages", passes+1, messagesThisPass);
 
       // Clear any overflow flags that occurred during clearing
       mcp2515.clearRXnOVR();
@@ -2098,7 +2095,7 @@ void prepareCANForInterrupt() {
       delay(20);  // Brief delay between passes
     }
 
-    Serial.printlnf("INITIAL STARTUP COMPLETE: Cleared %d total stale messages in %d passes",
+    Log.info("INITIAL STARTUP COMPLETE: Cleared %d total stale messages in %d passes",
                     totalCleared, passes);
 
     isFirstStartup = false;  // Mark that we've done the aggressive clear
@@ -2109,7 +2106,7 @@ void prepareCANForInterrupt() {
 
   } else {
     // Normal (non-initial) preparation for recovery scenarios
-    Serial.println("Preparing CAN for interrupt attachment...");
+    Log.info("Preparing CAN for interrupt attachment...");
 
     detachInterrupt(CAN_INT);
     delay(50);
@@ -2117,7 +2114,7 @@ void prepareCANForInterrupt() {
     // Clear error flags
     uint8_t errorFlags = mcp2515.getErrorFlags();
     if (errorFlags != 0) {
-      Serial.printlnf("Clearing MCP2515 error flags: 0x%02X", errorFlags);
+      Log.info("Clearing MCP2515 error flags: 0x%02X", errorFlags);
       mcp2515.clearRXnOVR();
     }
 
@@ -2129,14 +2126,14 @@ void prepareCANForInterrupt() {
       messagesCleared++;
     }
     if (messagesCleared > 0) {
-      Serial.printlnf("Discarded %d pending messages from MCP2515",
+      Log.info("Discarded %d pending messages from MCP2515",
                       messagesCleared);
     }
 
     // Clear interrupt flags
     uint8_t intFlags = mcp2515.getInterrupts();
     if (intFlags != 0) {
-      Serial.printlnf("Clearing MCP2515 interrupt flags: 0x%02X", intFlags);
+      Log.info("Clearing MCP2515 interrupt flags: 0x%02X", intFlags);
       mcp2515.clearInterrupts();
     }
   }
@@ -2150,7 +2147,7 @@ void prepareCANForInterrupt() {
   memset(messageQueue, 0, sizeof(messageQueue));
   interrupts();
 
-  Serial.println("Software queues reset");
+  Log.info("Software queues reset");
 
   // 6. Reset CAN error monitoring state
   canErrorMonitor.consecutiveErrors = 0;
@@ -2163,7 +2160,7 @@ void prepareCANForInterrupt() {
   attachInterrupt(CAN_INT, can_interrupt, FALLING);
   canInterruptAttached = true;  // Enable port polling
 
-  Serial.println("CAN interrupt re-attached with clean state");
+  Log.info("CAN interrupt re-attached with clean state");
 }
 
 // Interruptible delay that processes cloud messages and checks for pending commands
@@ -2192,7 +2189,7 @@ void handleRxOverflowWithEscalation(unsigned long currentTime) {
     canErrorMonitor.firstRxOverflowTime = currentTime;
   }
 
-  Serial.printlnf("RX buffer overflow detected (#%d) - clearing buffers",
+  Log.info("RX buffer overflow detected (#%d) - clearing buffers",
                   canErrorMonitor.rxOverflowCount);
 
   // Always try clearing buffers first
@@ -2212,18 +2209,18 @@ void handleRxOverflowWithEscalation(unsigned long currentTime) {
     // Check if clearing buffers hasn't helped (overflow recurring within 1
     // second)
     if (currentTime - canErrorMonitor.lastRxOverflowClear < 1000) {
-      Serial.printlnf(
+      Log.info(
           "CRITICAL: RX overflow persisting despite buffer clearing");
-      Serial.printlnf("Overflow count: %d in %lu ms",
+      Log.info("Overflow count: %d in %lu ms",
                       canErrorMonitor.rxOverflowCount, overflowDuration);
-      Serial.printlnf(
+      Log.info(
           "Buffer clearing ineffective - triggering system restart");
 
       // Log the critical condition
       logCANError(-11, "persistent_rx_overflow_restart");
 
       // Force immediate restart
-      Serial.printlnf(
+      Log.info(
           "*** FORCING SYSTEM RESTART DUE TO PERSISTENT RX OVERFLOW ***");
       delay(100); // Brief delay for serial output
       System.reset(RESET_NO_WAIT);

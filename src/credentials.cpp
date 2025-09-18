@@ -28,10 +28,10 @@ void initializeCredentials() {
 }
 
 void getIotCredentials(const char *event, const char *data) {
-  Serial.printlnf("Received response: %s", data);
+  Log.info("Received response: %s", data);
 
   if (strlen(data) == 0) {
-    Serial.println("Empty credentials response");
+    Log.info("Empty credentials response");
     return;
   }
 
@@ -40,7 +40,7 @@ void getIotCredentials(const char *event, const char *data) {
   DeserializationError error = deserializeJson(doc, data);
 
   if (error) {
-    Serial.printlnf("Failed to parse credentials JSON: %s", error.c_str());
+    Log.error("Failed to parse credentials JSON: %s", error.c_str());
     return;
   }
 
@@ -56,9 +56,9 @@ void getIotCredentials(const char *event, const char *data) {
   if (doc.containsKey("hub_uuid")) {
     iotCreds.hub_uuid = doc["hub_uuid"].as<String>();
   }
-  Serial.println("Hub UUID: " + iotCreds.hub_uuid);
-  Serial.println("Particle ID: " + iotCreds.particleId);
-  Serial.println("Pub_id: " + iotCreds.pubId);
+  Log.info("Hub UUID: " + iotCreds.hub_uuid);
+  Log.info("Particle ID: " + iotCreds.particleId);
+  Log.info("Pub_id: " + iotCreds.pubId);
 
   // Validate required fields
   if (iotCreds.pubId.length() > 0 && iotCreds.particleId.length() > 0) {
@@ -69,7 +69,7 @@ void getIotCredentials(const char *event, const char *data) {
     deviceParticleId.toLowerCase();
 
     if (cloudParticleId != deviceParticleId) {
-      Serial.printlnf("Particle ID mismatch - Cloud: '%s', Device: '%s'",
+      Log.info("Particle ID mismatch - Cloud: '%s', Device: '%s'",
                       iotCreds.particleId.c_str(), Particle.deviceID().c_str());
       credentialsFetched = false;
       return;
@@ -79,20 +79,20 @@ void getIotCredentials(const char *event, const char *data) {
     strncpy(MANUAL_MODE, iotCreds.pubId, sizeof(MANUAL_MODE) - 1);
     MANUAL_MODE[sizeof(MANUAL_MODE) - 1] = '\0'; // Ensure null-terminated
 
-    Serial.printlnf("Credentials successfully fetched and validated");
-    Serial.printlnf("PubId: %s", iotCreds.pubId.c_str());
-    Serial.printlnf("Hub UUID: %s", iotCreds.hub_uuid.c_str());
+    Log.info("Credentials successfully fetched and validated");
+    Log.info("PubId: %s", iotCreds.pubId.c_str());
+    Log.info("Hub UUID: %s", iotCreds.hub_uuid.c_str());
     Particle.unsubscribe();
     credentialsFetched = true;
   } else {
-    Serial.println("Invalid credentials received");
+    Log.info("Invalid credentials received");
     credentialsFetched = false;
   }
 }
 
 void requestCredentials() {
   if (attemptedCredentialsFetchCount >= MAX_CREDENTIAL_ATTEMPTS) {
-    Serial.println("Max credential fetch attempts reached");
+    Log.info("Max credential fetch attempts reached");
     return;
   }
 
@@ -103,7 +103,7 @@ void requestCredentials() {
     return;
   }
 
-  Serial.printlnf("Requesting credentials (attempt %d/%d)",
+  Log.info("Requesting credentials (attempt %d/%d)",
                   attemptedCredentialsFetchCount + 1, MAX_CREDENTIAL_ATTEMPTS);
 
   Particle.publish(PARTICLE_CREDENTIALS, deviceIdBuf, PRIVATE);

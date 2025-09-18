@@ -11,7 +11,7 @@ PortEventHandler::PortEventHandler(PortStateManager *manager)
 
 void PortEventHandler::handleCANMessage(const ParsedCANMessage &message) {
   if (!isValidPortNumber(message.sourcePort)) {
-    Serial.printlnf("Invalid port number in CAN message: %d",
+    Log.info("Invalid port number in CAN message: %d",
                     message.sourcePort);
     return;
   }
@@ -60,7 +60,7 @@ void PortEventHandler::handleCANMessage(const ParsedCANMessage &message) {
     break;
 
   default:
-    Serial.printlnf("Unknown CAN message type received from port %d",
+    Log.info("Unknown CAN message type received from port %d",
                     message.sourcePort);
     break;
   }
@@ -85,10 +85,10 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
   if (message.status.docked && message.status.charging &&
       !message.status.vehicleSecured) {
     // Vehicle is charging but not secured - this is always a violation
-    Serial.printlnf("SECURITY VIOLATION: Port %d - Vehicle charging without "
+    Log.info("SECURITY VIOLATION: Port %d - Vehicle charging without "
                     "security verification!",
                     port);
-    Serial.printlnf(
+    Log.info(
         "Port %d - Docked: %s, Charging: %s, Secured: %s, VIN: '%s'", port,
         message.status.docked ? "YES" : "NO",
         message.status.charging ? "YES" : "NO",
@@ -103,7 +103,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
              port);
     publishStatusToCloud(port, buffer, sizeof(buffer));
 
-    Serial.printlnf("Port %d - Emergency exit triggered for unsecured charging",
+    Log.info("Port %d - Emergency exit triggered for unsecured charging",
                     port);
     return; // Skip further processing for this compromised port
   }
@@ -120,7 +120,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     // charging)
     if (state->send_vin_request_timer == 0) {
       state->send_vin_request_timer = millis();
-      Serial.printlnf("Port %d - Starting grace period timer for charging "
+      Log.info("Port %d - Starting grace period timer for charging "
                       "vehicle without VIN",
                       port);
     }
@@ -130,10 +130,10 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     }
 
     if (timeSinceVINRequest > VIN_AUTH_GRACE_PERIOD) {
-      Serial.printlnf("SECURITY VIOLATION: Port %d - Charging with incomplete "
+      Log.info("SECURITY VIOLATION: Port %d - Charging with incomplete "
                       "VIN after grace period!",
                       port);
-      Serial.printlnf("Port %d - VIN length: %d, Grace period expired: %lu ms",
+      Log.info("Port %d - VIN length: %d, Grace period expired: %lu ms",
                       port, strlen(state->VIN), timeSinceVINRequest);
 
       // Trigger emergency exit after grace period
@@ -145,12 +145,12 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
                "SECURITY_VIOLATION,%d,INCOMPLETE_VIN_TIMEOUT", port);
       publishStatusToCloud(port, buffer, sizeof(buffer));
 
-      Serial.printlnf("Port %d - Emergency exit triggered for VIN timeout",
+      Log.info("Port %d - Emergency exit triggered for VIN timeout",
                       port);
       return;
     } else {
       // Still within grace period - log but allow continued operation
-      Serial.printlnf("Port %d - Charging with incomplete VIN, within grace "
+      Log.info("Port %d - Charging with incomplete VIN, within grace "
                       "period (%lu/%lu ms) - VIN length: %d",
                       port, timeSinceVINRequest, VIN_AUTH_GRACE_PERIOD,
                       strlen(state->VIN));
@@ -158,7 +158,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
       // Request VIN if we haven't already
       if (!state->vin_request_flag) {
         state->vin_request_flag = true;
-        Serial.printlnf("Port %d - Requesting VIN during grace period", port);
+        Log.info("Port %d - Requesting VIN during grace period", port);
       }
     }
   }
@@ -176,7 +176,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     // docked)
     if (state->send_vin_request_timer == 0) {
       state->send_vin_request_timer = millis();
-      Serial.printlnf("Port %d - Starting grace period timer for trapped "
+      Log.info("Port %d - Starting grace period timer for trapped "
                       "vehicle without VIN",
                       port);
     }
@@ -186,10 +186,10 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     }
 
     if (timeSinceVINRequest > VIN_AUTH_GRACE_PERIOD) {
-      Serial.printlnf("SECURITY VIOLATION: Port %d - Vehicle trapped without "
+      Log.info("SECURITY VIOLATION: Port %d - Vehicle trapped without "
                       "VIN after grace period!",
                       port);
-      Serial.printlnf("Port %d - VIN length: %d, Grace period expired: %lu ms",
+      Log.info("Port %d - VIN length: %d, Grace period expired: %lu ms",
                       port, strlen(state->VIN), timeSinceVINRequest);
 
       // Trigger emergency exit to prevent trapping
@@ -201,14 +201,14 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
                "SECURITY_VIOLATION,%d,TRAPPED_VIN_TIMEOUT", port);
       publishStatusToCloud(port, buffer, sizeof(buffer));
 
-      Serial.printlnf("Port %d - Emergency exit triggered for trapped vehicle",
+      Log.info("Port %d - Emergency exit triggered for trapped vehicle",
                       port);
       return;
     } else {
       // Still within grace period - ensure VIN is being requested
       if (!state->vin_request_flag) {
         state->vin_request_flag = true;
-        Serial.printlnf("Port %d - Requesting VIN for trapped vehicle during "
+        Log.info("Port %d - Requesting VIN for trapped vehicle during "
                         "grace period",
                         port);
       }
@@ -217,7 +217,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
 
   // Clear VIN if vehicle is no longer docked (handles undocking without unlock)
   if (!message.status.docked && strlen(state->VIN) > 0) {
-    Serial.printlnf("Port %d - Vehicle undocked, clearing VIN (%s)", port,
+    Log.info("Port %d - Vehicle undocked, clearing VIN (%s)", port,
                     state->VIN);
     memset(state->VIN, 0, sizeof(state->VIN));
     state->vin_request_flag = false;
@@ -230,10 +230,10 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
   if (strlen(state->VIN) > 0 && !message.status.charging &&
       message.status.docked && message.status.vehicleSecured &&
       !state->awaiting_cloud_vin_resp) {
-    Serial.printlnf("Port %d - Port restart detected: charging stopped but "
+    Log.info("Port %d - Port restart detected: charging stopped but "
                     "vehicle secured and we are not awaiting the cloud",
                     port);
-    Serial.printlnf("Port %d - Clearing VIN state to restart session", port);
+    Log.info("Port %d - Clearing VIN state to restart session", port);
 
     // Clear VIN state to restart the session
     memset(state->VIN, 0, sizeof(state->VIN));
@@ -248,7 +248,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     state->send_charge_flag = false;
     state->charge_varient = '\0';
 
-    Serial.printlnf("Port %d - VIN state cleared, will restart sequence", port);
+    Log.info("Port %d - VIN state cleared, will restart sequence", port);
   }
 
   // Handle VIN request logic - start VIN sequence for vehicles without VIN
@@ -257,7 +257,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     // Start VIN sequence if we don't already have a VIN
     state->vin_request_flag = true;
     state->send_vin_request_timer = millis();
-    Serial.printlnf("Port %d - Starting new VIN sequence", port);
+    Log.info("Port %d - Starting new VIN sequence", port);
   }
 
   // Special case: Vehicle is secured and charging but we have no VIN (IoT
@@ -267,7 +267,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
       !state->vin_request_flag) {
     state->vin_request_flag = true;
     state->send_vin_request_timer = millis();
-    Serial.printlnf(
+    Log.info(
         "Port %d - Emergency VIN request for charging vehicle without VIN",
         port);
   }
@@ -278,7 +278,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     // Set charge_successful when port reports charging = '1'
     if (state->check_charge_status) {
       state->charge_successful = true;
-      Serial.printlnf("Port %d - Charging detected via status message", port);
+      Log.info("Port %d - Charging detected via status message", port);
     }
   }
 
@@ -289,7 +289,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
 
   // Handle fatal NFC errors
   if (message.status.fatalNFCError) {
-    Serial.printlnf("FATAL NFC ERROR on port %d", port);
+    Log.info("FATAL NFC ERROR on port %d", port);
     // char buffer[32];
     // snprintf(buffer, sizeof(buffer), "NFC_ERROR,%d", port);
     // publishStatusToCloud(port, buffer);
@@ -304,7 +304,7 @@ void PortEventHandler::handleSpontaneousVINMessage(
     return;
   }
 
-  Serial.printlnf(
+  Log.info(
       "Port %d - Spontaneous VIN with full buffer, resetting session state",
       port);
 
@@ -323,7 +323,7 @@ void PortEventHandler::handleSpontaneousVINMessage(
 
   // But always send to cloud regardless of charging state
   if (strlen(state->VIN) >= VIN_LENGTH) {
-    Serial.printlnf("Port %d - Forcing cloud transmission for spontaneous VIN",
+    Log.info("Port %d - Forcing cloud transmission for spontaneous VIN",
                     port);
     state->send_vin_to_cloud_flag = true;
     state->awaiting_cloud_vin_resp = true;
@@ -343,7 +343,7 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
   if (strlen(state->VIN) > 0 && strlen(state->VIN) < VIN_LENGTH) {
     unsigned long timeSinceLastChunk = millis() - state->send_vin_request_timer;
     if (timeSinceLastChunk > VIN_TIMEOUT) {
-      Serial.printlnf("Port %d - Partial VIN timeout, clearing and restarting",
+      Log.info("Port %d - Partial VIN timeout, clearing and restarting",
                       port);
       memset(state->VIN, 0, sizeof(state->VIN));
       state->vin_request_flag = true; // Request VIN again
@@ -353,15 +353,15 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
 
   // If this is the first chunk of a new VIN sequence, clear the buffer
   if (strlen(state->VIN) == 0) {
-    Serial.printlnf("Port %d - Starting VIN collection", port);
+    Log.info("Port %d - Starting VIN collection", port);
     state->send_vin_request_timer =
         millis(); // Update timer for timeout tracking
   }
 
-  // Serial.printlnf("=== VIN PROCESSING DEBUG ===");
-  // Serial.printlnf("Port %d - Raw chunk received: '%s'", port,
+  // Log.info("=== VIN PROCESSING DEBUG ===");
+  // Log.info("Port %d - Raw chunk received: '%s'", port,
   //                 message.vinData.vin);
-  // Serial.printlnf("Port %d - Current VIN before: '%s' (len=%d)", port,
+  // Log.info("Port %d - Current VIN before: '%s' (len=%d)", port,
   //                 state->VIN, strlen(state->VIN));
 
   // Concatenate VIN chunks instead of overwriting
@@ -370,49 +370,49 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
   size_t availableSpace =
       sizeof(state->VIN) - currentLen - 1; // -1 for null terminator
 
-  // Serial.printlnf("Port %d - Chunk length: %d, Available space: %d", port,
+  // Log.info("Port %d - Chunk length: %d, Available space: %d", port,
   // chunkLen, availableSpace);
 
   // Only append if there's space in the VIN buffer
   if (chunkLen <= availableSpace) {
     strcat(state->VIN, message.vinData.vin);
-    // Serial.printlnf("Port %d - Concatenation successful", port);
+    // Log.info("Port %d - Concatenation successful", port);
   } else {
-    // Serial.printlnf("Port %d - WARNING: Not enough space for chunk!", port);
+    // Log.info("Port %d - WARNING: Not enough space for chunk!", port);
   }
 
-  // Serial.printlnf("Port %d - VIN after concatenation: '%s' (len=%d)", port,
+  // Log.info("Port %d - VIN after concatenation: '%s' (len=%d)", port,
   // state->VIN, strlen(state->VIN));
 
   // Check if VIN is complete (16 characters for full VIN)
   if (strlen(state->VIN) >= VIN_LENGTH) {
-    Serial.printlnf("Port %d - COMPLETE VIN: %s", port, state->VIN);
+    Log.info("Port %d - COMPLETE VIN: %s", port, state->VIN);
 
     state->vin_request_flag = false;
     state->vin_retry_count = 0; // Reset retry counter on successful completion
 
     // Only send to cloud if vehicle is not already charging (prevents cloud
     // spam on system restart) - unless this is a spontaneous VIN
-    Serial.printlnf("Port %d - Setting flags for cloud transmission", port);
+    Log.info("Port %d - Setting flags for cloud transmission", port);
     state->send_vin_to_cloud_flag = true;
     state->awaiting_cloud_vin_resp = true;
     state->cloud_vin_resp_timer = millis();
     if (!state->charging) {
-      // Serial.printlnf("Port %d - Setting flags for cloud transmission",
+      // Log.info("Port %d - Setting flags for cloud transmission",
       // port); state->send_vin_to_cloud_flag = true;
       // state->awaiting_cloud_vin_resp = true;
       // state->cloud_vin_resp_timer = millis();
     } else {
-      Serial.printlnf("Port %d - VIN collected but skipping cloud transmission "
+      Log.info("Port %d - VIN collected but skipping cloud transmission "
                       "(already charging)",
                       port);
     }
   } else {
-    // Serial.printlnf("Port %d - PARTIAL VIN: %s (%d/%d chars)", port,
+    // Log.info("Port %d - PARTIAL VIN: %s (%d/%d chars)", port,
     // state->VIN,
     //                 strlen(state->VIN), VIN_LENGTH);
   }
-  // Serial.printlnf("=== END VIN DEBUG ===");
+  // Log.info("=== END VIN DEBUG ===");
 }
 
 void PortEventHandler::handleTemperatureMessage(
@@ -434,7 +434,7 @@ void PortEventHandler::handleTemperatureMessage(
     }
   }
 
-  Serial.printlnf("Temperature data from port %d: %s°C", port,
+  Log.info("Temperature data from port %d: %s°C", port,
                   message.tempData.temperature);
 
   // Publish temperature to cloud
@@ -455,7 +455,7 @@ void PortEventHandler::handleFirmwareMessage(const ParsedCANMessage &message) {
     state->send_port_build_version_flag = false;
   }
 
-  Serial.printlnf("Firmware version from port %d: %s", port,
+  Log.info("Firmware version from port %d: %s", port,
                   message.firmwareData.version);
 
   // Publish firmware version to cloud
@@ -475,7 +475,7 @@ void PortEventHandler::handleHeartbeatMessage(const ParsedCANMessage &message) {
     state->check_heartbeat_status = true;
   }
 
-  Serial.printlnf("Heartbeat response from port %d", port);
+  Log.info("Heartbeat response from port %d", port);
 }
 
 void PortEventHandler::handleUnlockMessage(const ParsedCANMessage &message) {
@@ -489,7 +489,7 @@ void PortEventHandler::handleUnlockMessage(const ParsedCANMessage &message) {
     state->check_unlock_status = true;
   }
 
-  Serial.printlnf("Unlock response from port %d", port);
+  Log.info("Unlock response from port %d", port);
 }
 
 void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
@@ -497,13 +497,13 @@ void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
 
   PortState *state = getPortState(port);
   if (state) {
-    Serial.printlnf("⚡ Charge response from port %d, Status: %s", port,
+    Log.info("⚡ Charge response from port %d, Status: %s", port,
                     message.chargeData.variant == '1' ||
                             message.chargeData.variant == '2'
                         ? "Charging"
                     : message.chargeData.variant == '3' ? "Not Charging"
                                                         : "Unknown");
-    Serial.printlnf("⚡ chargeData: %c", message.chargeData.variant);
+    Log.info("⚡ chargeData: %c", message.chargeData.variant);
     // Validate charge variant matches what we sent
     if (message.chargeData.variant == '1' ||
         message.chargeData.variant == '2') {
@@ -513,7 +513,7 @@ void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
     } else if (message.chargeData.variant == '3') {
       state->charging = false;
     } else {
-      Serial.printlnf(
+      Log.info(
           "Charge variant mismatch on port %d. Expected: %c, Got: %c", port,
           state->charge_varient, message.chargeData.variant);
     }
@@ -526,7 +526,7 @@ void PortEventHandler::handleForceEjectMessage(
     const ParsedCANMessage &message) {
   int port = message.sourcePort;
 
-  Serial.printlnf("FORCE EJECT INITIATED on port %d", port);
+  Log.info("FORCE EJECT INITIATED on port %d", port);
 
   PortState *state = getPortState(port);
   if (state) {
@@ -569,7 +569,7 @@ void PortEventHandler::resetPortAfterUnlock(int port) {
     // Clear VIN and charge variant only on unlock (vehicle leaving)
     memset(state->VIN, 0, sizeof(state->VIN));
     state->charge_varient = '\0';
-    Serial.printlnf("Port %d - VIN cleared after unlock (vehicle leaving)",
+    Log.info("Port %d - VIN cleared after unlock (vehicle leaving)",
                     port);
   }
 }
@@ -584,7 +584,7 @@ void PortEventHandler::resetPortAfterCharge(int port) {
 }
 
 void PortEventHandler::handleCommandTimeout(int port, const char *commandType) {
-  Serial.printlnf("Command timeout on port %d for command: %s", port,
+  Log.info("Command timeout on port %d for command: %s", port,
                   commandType);
 
   // Publish timeout to cloud
@@ -607,7 +607,7 @@ void PortEventHandler::handleCommandTimeout(int port, const char *commandType) {
 }
 
 void PortEventHandler::logMessageProcessing(const ParsedCANMessage &message) {
-  Serial.printlnf("Processing %s message from port %d",
+  Log.info("Processing %s message from port %d",
                   canProcessor.getMessageTypeString(message.messageType),
                   message.sourcePort);
 }
@@ -626,14 +626,14 @@ void PortEventHandler::formatCloudMessage(const char *command,
 bool PortEventHandler::isChargingAuthorized(int port) {
   PortState *state = getPortState(port);
   if (!state) {
-    Serial.printlnf(
+    Log.info(
         "Port %d - No state available for charging authorization check", port);
     return false;
   }
 
   // Check if vehicle is properly docked and secured
   if (!state->docked || !state->vehicle_secured) {
-    Serial.printlnf("Port %d - Charging not authorized: docked=%s, secured=%s",
+    Log.info("Port %d - Charging not authorized: docked=%s, secured=%s",
                     port, state->docked ? "YES" : "NO",
                     state->vehicle_secured ? "YES" : "NO");
     return false;
@@ -651,13 +651,13 @@ bool PortEventHandler::isChargingAuthorized(int port) {
 
     if (timeSinceVINRequest <= VIN_AUTH_GRACE_PERIOD &&
         state->send_vin_request_timer > 0) {
-      Serial.printlnf("Port %d - Charging authorized during VIN grace period: "
+      Log.info("Port %d - Charging authorized during VIN grace period: "
                       "VIN length %d, time elapsed %lu ms",
                       port, strlen(state->VIN), timeSinceVINRequest);
       return true; // Allow charging during grace period
     }
 
-    Serial.printlnf("Port %d - Charging not authorized: incomplete VIN (length "
+    Log.info("Port %d - Charging not authorized: incomplete VIN (length "
                     "%d): '%s', grace period expired",
                     port, strlen(state->VIN), state->VIN);
     return false;
@@ -666,13 +666,13 @@ bool PortEventHandler::isChargingAuthorized(int port) {
   // Check if we're awaiting cloud response (charging should only start after
   // cloud approval unless in grace period)
   if (state->awaiting_cloud_vin_resp) {
-    Serial.printlnf(
+    Log.info(
         "Port %d - Charging not authorized: still awaiting cloud VIN response",
         port);
     return false;
   }
 
-  Serial.printlnf(
+  Log.info(
       "Port %d - Charging authorized: vehicle secured with valid VIN: %s", port,
       state->VIN);
 
@@ -681,7 +681,7 @@ bool PortEventHandler::isChargingAuthorized(int port) {
 
 void PortEventHandler::logSecurityEvent(int port, const char *eventType,
                                         const char *details) {
-  Serial.printlnf("SECURITY EVENT - Port %d: %s - %s", port, eventType,
+  Log.info("SECURITY EVENT - Port %d: %s - %s", port, eventType,
                   details);
 
   // Publish to cloud for centralized monitoring

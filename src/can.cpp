@@ -22,7 +22,7 @@ uint8_t sendCanMessage(can_frame msg)
   // Basic error tracking - log critical errors
   if (result == 0xA || result == 10 || result == 0xF || result == 15)
   {
-    Serial.printlnf("CRITICAL CAN Error: 0x%X - Controller may be corrupted",
+    Log.error("CRITICAL CAN Error: 0x%X - Controller may be corrupted",
                     result);
     // Set global flag for main.ino to handle
     extern volatile bool can_recovery_needed;
@@ -30,7 +30,7 @@ uint8_t sendCanMessage(can_frame msg)
   }
   else if (result != 0)
   {
-    Serial.printlnf("CAN Error: 0x%X", result);
+    Log.error("CAN Error: 0x%X", result);
   }
 
   return result;
@@ -49,7 +49,7 @@ void incrementMessageCounter()
     // Back-to-back messages detected (less than 10ms apart)
     if (rapid_message_count > 10)
     {
-      Serial.printlnf("ALERT: Rapid messages detected - %lums apart",
+      Log.info("ALERT: Rapid messages detected - %lums apart",
                       current_time - last_message_time);
     }
   }
@@ -79,7 +79,7 @@ void clearAllCANBuffers()
 
   if (cleared > 0)
   {
-    Serial.printlnf("Cleared %d stale messages from CAN buffers", cleared);
+    Log.info("Cleared %d stale messages from CAN buffers", cleared);
   }
 }
 uint8_t getCANErrorFlags(bool debugLog)
@@ -92,37 +92,37 @@ uint8_t getCANErrorFlags(bool debugLog)
       return errorFlags; // No errors, exit early
     }
 
-    Serial.println("=== CAN Error Detected ===");
+    Log.error("=== CAN Error Detected ===");
 
     // --- RX Errors ---
     if (errorFlags & MCP2515::EFLG_RX1OVR)
     {
-      Serial.println("RX1OVR: Receive buffer 1 overflow");
+      Log.error("RX1OVR: Receive buffer 1 overflow");
     }
     if (errorFlags & MCP2515::EFLG_RX0OVR)
     {
-      Serial.println("RX0OVR: Receive buffer 0 overflow");
+      Log.error("RX0OVR: Receive buffer 0 overflow");
     }
     if (errorFlags & MCP2515::EFLG_RXEP)
     {
-      Serial.println("RXEP: Receive error-passive (high error rate on RX)");
+      Log.error("RXEP: Receive error-passive (high error rate on RX)");
     }
 
     // --- TX Errors ---
     if (errorFlags & MCP2515::EFLG_TXEP)
     {
-      Serial.println("TXEP: Transmit error-passive (too many TX errors)");
+      Log.error("TXEP: Transmit error-passive (too many TX errors)");
     }
     if (errorFlags & MCP2515::EFLG_TXWAR)
     {
-      Serial.println("TXWAR: Transmit error warning (high TX error rate)");
+      Log.error("TXWAR: Transmit error warning (high TX error rate)");
     }
     if (errorFlags & MCP2515::EFLG_EWARN)
     {
-      Serial.println("EWARN: General error warning (high error count overall)");
+      Log.error("EWARN: General error warning (high error count overall)");
     }
 
-    Serial.println("==========================");
+    Log.error("==========================");
   }
   return errorFlags;
 }
@@ -136,37 +136,37 @@ void printCANErrorState()
     return; // No errors, exit early
   }
 
-  Serial.println("=== CAN Error Detected ===");
+  Log.error("=== CAN Error Detected ===");
 
   // --- RX Errors ---
   if (errorFlags & MCP2515::EFLG_RX1OVR)
   {
-    Serial.println("RX1OVR: Receive buffer 1 overflow");
+    Log.error("RX1OVR: Receive buffer 1 overflow");
   }
   if (errorFlags & MCP2515::EFLG_RX0OVR)
   {
-    Serial.println("RX0OVR: Receive buffer 0 overflow");
+    Log.error("RX0OVR: Receive buffer 0 overflow");
   }
   if (errorFlags & MCP2515::EFLG_RXEP)
   {
-    Serial.println("RXEP: Receive error-passive (high error rate on RX)");
+    Log.error("RXEP: Receive error-passive (high error rate on RX)");
   }
 
   // --- TX Errors ---
   if (errorFlags & MCP2515::EFLG_TXEP)
   {
-    Serial.println("TXEP: Transmit error-passive (too many TX errors)");
+    Log.error("TXEP: Transmit error-passive (too many TX errors)");
   }
   if (errorFlags & MCP2515::EFLG_TXWAR)
   {
-    Serial.println("TXWAR: Transmit error warning (high TX error rate)");
+    Log.error("TXWAR: Transmit error warning (high TX error rate)");
   }
   if (errorFlags & MCP2515::EFLG_EWARN)
   {
-    Serial.println("EWARN: General error warning (high error count overall)");
+    Log.error("EWARN: General error warning (high error count overall)");
   }
 
-  Serial.println("==========================");
+  Log.error("==========================");
 }
 void ReturnErrorString(uint8_t err, char *ret, size_t ret_size)
 {
@@ -209,5 +209,5 @@ void ReturnErrorString(uint8_t err, char *ret, size_t ret_size)
     }
     break;
   }
-  Serial.println(ret);
+  Log.info(ret);
 }

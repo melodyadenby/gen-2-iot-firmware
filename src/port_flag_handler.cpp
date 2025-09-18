@@ -16,11 +16,11 @@ void PortFlagHandler::processAllPortFlags() {
   for (int i = 0; i < MAX_PORTS; i++) {
     // Check for cloud messages between each port
     Particle.process();
-    
+
     int port = getNextPort();
     if (hasPortPendingFlags(port)) {
       processPortFlags(port);
-      
+
       // Check again after processing a port's flags
       Particle.process();
     }
@@ -39,7 +39,7 @@ void PortFlagHandler::processPortFlags(int port) {
 
   // Process cloud messages at start of flag processing
   Particle.process();
-  
+
   // Check for partial VIN timeout
   checkVINTimeout(port, state);
 
@@ -130,9 +130,9 @@ void PortFlagHandler::handleChargeCommand(int port) {
 
   // Security validation: Only allow charging if properly authorized
   if (portEventHandler && !portEventHandler->isChargingAuthorized(port)) {
-    Serial.printlnf(
+    Log.info(
         "SECURITY VIOLATION: Cannot charge port %d - not authorized!", port);
-    Serial.printlnf(
+    Log.info(
         "Port %d - Charge command blocked to prevent unauthorized charging. "
         "Vehicle will be ejected after grace period if VIN not validated.",
         port);
@@ -142,7 +142,7 @@ void PortFlagHandler::handleChargeCommand(int port) {
   }
 
   logFlagActivity(port, "CHARGE", "Sending charge command");
-  Serial.printlnf("Port %d - Charging authorized for secured vehicle with VIN",
+  Log.info("Port %d - Charging authorized for secured vehicle with VIN",
                   port);
 
   // Convert single char to string
@@ -195,9 +195,9 @@ void PortFlagHandler::handleManualTagRead(int port) {
   }
 
   logFlagActivity(port, "TAG STATUS", "Requesting Tag data");
-  Serial.printlnf("Status Tag request for port %d\n", port);
+  Log.info("Status Tag request for port %d\n", port);
   if (sendPortCommand(port, 'S', "0", 10 * SEC_TO_MS_MULTIPLIER) == ERROR_OK) {
-    Serial.println("Tag data requested successfully");
+    Log.info("Tag data requested successfully");
     state->send_manual_tag_read_flag = false;
   } else {
     handleCommandError(port, "TAG STATUS", -1);
@@ -216,7 +216,7 @@ void PortFlagHandler::handleChargingParameters(int port) {
     state->send_charging_params_flag = false;
   } else {
     handleCommandError(port, "CHARGE_PARAMS", -1);
-    Serial.println("Failed to send port params!");
+    Log.info("Failed to send port params!");
   }
 }
 
@@ -272,7 +272,7 @@ void PortFlagHandler::handleVINToCloud(int port) {
     snprintf(buffer, sizeof(buffer), "C,2,%d,%s", port, state->VIN);
     publishToCloud(buffer);
 
-    Serial.printlnf("Port %d - VIN sent to cloud (one-time only): %s", port,
+    Log.info("Port %d - VIN sent to cloud (one-time only): %s", port,
                     state->VIN);
   }
 }
@@ -457,7 +457,7 @@ void PortFlagHandler::handleChargeFailure(int port) {
 
 int PortFlagHandler::sendPortCommand(int port, char command,
                                      const char *variant, int timeout) {
-  Serial.printlnf("GOING TO SEND MESSAGE FOR PORT %d", port);
+  Log.info("GOING TO SEND MESSAGE FOR PORT %d", port);
   if (!isValidPort(port)) {
     return -1;
   }
@@ -498,14 +498,14 @@ void PortFlagHandler::resetPortAfterOperation(int port) {
     memset(state->VIN, 0, sizeof(state->VIN));
     state->charge_varient = '\0';
 
-    Serial.printlnf("Port %d - Port state reset after operation, VIN cleared",
+    Log.info("Port %d - Port state reset after operation, VIN cleared",
                     port);
   }
 }
 
 void PortFlagHandler::logFlagActivity(int port, const char *flagName,
                                       const char *action) {
-  Serial.printlnf("Port %d - %s: %s", port, flagName, action);
+  Log.info("Port %d - %s: %s", port, flagName, action);
 }
 
 int PortFlagHandler::getNextPort() {
@@ -555,7 +555,7 @@ void PortFlagHandler::formatCloudMessage(const char *command,
 
 void PortFlagHandler::handleCommandError(int port, const char *command,
                                          int errorCode) {
-  Serial.printlnf("CAN ERROR on port %d for command %s (error: %d)", port,
+  Log.info("CAN ERROR on port %d for command %s (error: %d)", port,
                   command, errorCode);
 
   // char buffer[64];
@@ -583,13 +583,13 @@ void PortFlagHandler::checkVINTimeout(int port, PortState *state) {
     unsigned long timeSinceLastUpdate =
         millis() - state->send_vin_request_timer;
     if (timeSinceLastUpdate > VIN_TIMEOUT) {
-      Serial.printlnf("Port %d - Partial VIN timeout after %lu ms (retry count: %d)",
+      Log.info("Port %d - Partial VIN timeout after %lu ms (retry count: %d)",
                       port, timeSinceLastUpdate, state->vin_retry_count);
 
       // Add exponential backoff to prevent rapid retries
       unsigned long backoffDelay = VIN_RETRY_BACKOFF * (state->vin_retry_count + 1);
       if (backoffDelay > 60000) backoffDelay = 60000; // Cap at 60 seconds
-      
+
       // Check if enough time has passed since last retry
       if (timeSinceLastUpdate < (VIN_TIMEOUT + backoffDelay)) {
         // Still in backoff period, don't retry yet
@@ -602,7 +602,7 @@ void PortFlagHandler::checkVINTimeout(int port, PortState *state) {
       state->send_vin_request_timer = millis();
       state->vin_retry_count++; // Increment retry counter
 
-      Serial.printlnf("Port %d - VIN timeout recovery: retry %d (next backoff: %lu ms)",
+      Log.info("Port %d - VIN timeout recovery: retry %d (next backoff: %lu ms)",
                       port, state->vin_retry_count, backoffDelay);
     }
   }
@@ -610,7 +610,7 @@ void PortFlagHandler::checkVINTimeout(int port, PortState *state) {
 
 int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
                                      int timeout) {
-  Serial.printf("Sending charge params - volts: %s, amps: %s\n", volts, amps);
+  Log.info("Sending charge params - volts: %s, amps: %s\n", volts, amps);
 
   struct PortState *portState = getPortState(port);
   if (!portState) {
@@ -642,7 +642,7 @@ int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
 
   int result = sendCanMessage(reqMsg);
   if (result != ERROR_OK) {
-    Serial.printlnf("CAN Error in portWriteParams: %d", result);
+    Log.info("CAN Error in portWriteParams: %d", result);
   }
   return result;
 }
@@ -650,11 +650,11 @@ int PortFlagHandler::portWriteParams(int port, char volts[], char amps[],
 int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout) {
   struct PortState *portState = getPortState(port);
 
-  Serial.printlnf("portWriteNew: port=%d, cmd=%c", port, cmd);
+  Log.info("portWriteNew: port=%d, cmd=%c", port, cmd);
 
   struct can_frame reqMsg;
   if (port < 1 || port > MAX_PORTS) {
-    Serial.printf("portWrite Invalid port number: %d\n", port);
+    Log.info("portWrite Invalid port number: %d\n", port);
     return -1; // Return negative value to indicate error
   }
 
@@ -702,10 +702,7 @@ int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout) {
     for (size_t i = 2 + portStrLen; i < 8; i++) {
       reqMsg.data[i] = '\0';
     }
-    Serial.print("Sending to port: ");
-    Serial.println(port);
-    Serial.printf("Data: %s", reqMsg.data);
-    Serial.println();
+    Log.info("Sending to port: %d\nData: %s\n", port, reqMsg.data);
     // Set the CAN message length to 8
     reqMsg.can_dlc = 8;
   }
@@ -715,7 +712,7 @@ int PortFlagHandler::portWrite(int port, char cmd, char *variant, int timeout) {
 
   // Check for send errors
   if (result != ERROR_OK) {
-    Serial.printlnf("CAN send error: %d when sending to port %d", result, port);
+    Log.info("CAN send error: %d when sending to port %d", result, port);
   }
 
   return result;
@@ -727,7 +724,7 @@ bool PortFlagHandler::sendGetPortData(int addr) {
   }
 
   if (!isValidPort(addr)) {
-    Serial.printlnf("Invalid port number for data request: %d", addr);
+    Log.info("Invalid port number for data request: %d", addr);
     return false;
   }
 
@@ -767,7 +764,7 @@ bool PortFlagHandler::sendGetPortData(int addr) {
   if (result != ERROR_OK) {
     char error_buff[20];
     ReturnErrorString(result, error_buff, 20);
-    Serial.printlnf("Failed to send data request to port %d, error: %s", addr,
+    Log.info("Failed to send data request to port %d, error: %s", addr,
                     error_buff);
     return false;
   }
