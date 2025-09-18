@@ -75,6 +75,11 @@ void resetPortState(int portNumber) {
   port->unlock_retry_count = 0;
   port->fatal_NFC_error = false;
 
+  // Reset security violation retry fields
+  port->security_violation_retry_active = false;
+  port->security_vin_retry_count = 0;
+  port->security_vin_retry_timer = 0;
+
   // Reset numeric values
   port->command_timeout = 0;
   port->send_vin_request_timer = 0;

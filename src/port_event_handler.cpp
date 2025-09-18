@@ -136,17 +136,19 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
       Log.info("Port %d - VIN length: %d, Grace period expired: %lu ms",
                       port, strlen(state->VIN), timeSinceVINRequest);
 
-      // Trigger emergency exit after grace period
-      state->emergency_exit_flag = true;
-
-      // Notify cloud of security violation
-      char buffer[64];
-      snprintf(buffer, sizeof(buffer),
-               "SECURITY_VIOLATION,%d,INCOMPLETE_VIN_TIMEOUT", port);
-      publishStatusToCloud(port, buffer, sizeof(buffer));
-
-      Log.info("Port %d - Emergency exit triggered for VIN timeout",
-                      port);
+      // Start security violation VIN retry process (3 attempts, 10s apart)
+      if (!state->security_violation_retry_active) {
+        Log.info("Port %d - Starting security violation VIN retry process (3 attempts, 10s apart)", port);
+        state->security_violation_retry_active = true;
+        state->security_vin_retry_count = 0;
+        state->security_vin_retry_timer = millis();
+        
+        // Notify cloud of security violation
+        char buffer[64];
+        snprintf(buffer, sizeof(buffer),
+                 "SECURITY_VIOLATION,%d,INCOMPLETE_VIN_TIMEOUT", port);
+        publishStatusToCloud(port, buffer, sizeof(buffer));
+      }
       return;
     } else {
       // Still within grace period - log but allow continued operation
@@ -166,7 +168,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
   // SECURITY CHECK: Detect trapped vehicles without VIN after grace period
   // (regardless of charging status)
   if (message.status.docked && message.status.vehicleSecured &&
-      strlen(state->VIN) < VIN_LENGTH) {
+      strlen(state->VIN) < VIN_LENGTH && !message.status.charging) {
 
     // Check if we're in the authentication grace period (30 seconds)
     const unsigned long VIN_AUTH_GRACE_PERIOD = 30000; // 30 seconds
@@ -192,17 +194,19 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
       Log.info("Port %d - VIN length: %d, Grace period expired: %lu ms",
                       port, strlen(state->VIN), timeSinceVINRequest);
 
-      // Trigger emergency exit to prevent trapping
-      state->emergency_exit_flag = true;
-
-      // Notify cloud of security violation
-      char buffer[64];
-      snprintf(buffer, sizeof(buffer),
-               "SECURITY_VIOLATION,%d,TRAPPED_VIN_TIMEOUT", port);
-      publishStatusToCloud(port, buffer, sizeof(buffer));
-
-      Log.info("Port %d - Emergency exit triggered for trapped vehicle",
-                      port);
+      // Start security violation VIN retry process (3 attempts, 10s apart)
+      if (!state->security_violation_retry_active) {
+        Log.info("Port %d - Starting security violation VIN retry process for trapped vehicle", port);
+        state->security_violation_retry_active = true;
+        state->security_vin_retry_count = 0;
+        state->security_vin_retry_timer = millis();
+        
+        // Notify cloud of security violation
+        char buffer[64];
+        snprintf(buffer, sizeof(buffer),
+                 "SECURITY_VIOLATION,%d,TRAPPED_VIN_TIMEOUT", port);
+        publishStatusToCloud(port, buffer, sizeof(buffer));
+      }
       return;
     } else {
       // Still within grace period - ensure VIN is being requested
@@ -224,6 +228,11 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     state->send_vin_to_cloud_flag = false;
     state->awaiting_cloud_vin_resp = false;
     state->cloud_vin_resp_timer = 0;
+    
+    // Clear security violation retry state
+    state->security_violation_retry_active = false;
+    state->security_vin_retry_count = 0;
+    state->security_vin_retry_timer = 0;
   }
 
   // Detect port restart scenario: charging stopped but vehicle still secured
@@ -390,6 +399,14 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
 
     state->vin_request_flag = false;
     state->vin_retry_count = 0; // Reset retry counter on successful completion
+    
+    // Clear security violation retry state since VIN is now complete
+    if (state->security_violation_retry_active) {
+      Log.info("Port %d - VIN complete, canceling security violation retry process", port);
+      state->security_violation_retry_active = false;
+      state->security_vin_retry_count = 0;
+      state->security_vin_retry_timer = 0;
+    }
 
     // Only send to cloud if vehicle is not already charging (prevents cloud
     // spam on system restart) - unless this is a spontaneous VIN

@@ -51,6 +51,10 @@ struct PortState {
   int vin_retry_count = 0; // Track VIN retries for backoff calculation
   unsigned long
       last_emergency_unlock_time; // Last time emergency unlock was sent
+  // Security violation VIN retry fields
+  bool security_violation_retry_active = false; // Flag indicating we're in security violation retry mode
+  int security_vin_retry_count = 0; // Number of security VIN retries attempted (max 3)
+  unsigned long security_vin_retry_timer = 0; // Timer for 10-second intervals between security retries
   char charge_varient;            // Current charge varient
   char volts[3];                  // Port Voltage
   char amps[3];                   // Port Amperage

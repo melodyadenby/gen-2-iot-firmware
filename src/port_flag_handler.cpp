@@ -46,6 +46,7 @@ void PortFlagHandler::processPortFlags(int port) {
   // logFlagActivity(port, "PROCESSING", "Starting flag processing");
 
   // Process command flags in priority order
+  handleSecurityViolationVINRetry(port);
   handleEmergencyExit(port);
   handleVINRequest(port);
   handleUnlockCommand(port);
@@ -65,6 +66,61 @@ void PortFlagHandler::processPortFlags(int port) {
 
   // Handle timeouts
   checkCommandTimeouts(port);
+}
+
+void PortFlagHandler::handleSecurityViolationVINRetry(int port) {
+  PortState *state = getPortState(port);
+  if (!state || !state->security_violation_retry_active) {
+    return;
+  }
+
+  unsigned long currentTime = millis();
+  
+  // Check if 10 seconds have passed since last retry
+  if (currentTime - state->security_vin_retry_timer < 10000) {
+    return; // Still waiting for next retry interval
+  }
+
+  // Check if VIN is now complete (retry successful)
+  if (strlen(state->VIN) >= VIN_LENGTH) {
+    Log.info("Port %d - VIN complete during security retry, canceling retry process", port);
+    state->security_violation_retry_active = false;
+    state->security_vin_retry_count = 0;
+    state->security_vin_retry_timer = 0;
+    return;
+  }
+
+  // Check if we've exhausted all 3 retry attempts
+  if (state->security_vin_retry_count >= 3) {
+    Log.info("Port %d - Security VIN retries exhausted (%d attempts), triggering EMERGENCY_EXIT", 
+             port, state->security_vin_retry_count);
+    
+    // Clear retry state
+    state->security_violation_retry_active = false;
+    state->security_vin_retry_count = 0;
+    state->security_vin_retry_timer = 0;
+    
+    // Now trigger emergency exit
+    state->emergency_exit_flag = true;
+    
+    Log.info("Port %d - Emergency exit triggered for VIN timeout", port);
+    return;
+  }
+
+  // Send VIN request
+  state->security_vin_retry_count++;
+  Log.info("Port %d - Security violation VIN retry %d/3", port, state->security_vin_retry_count);
+  
+  logFlagActivity(port, "SECURITY_VIN_RETRY", "Sending VIN request");
+  
+  if (sendPortCommand(port, 'K', nullptr, 10 * SEC_TO_MS_MULTIPLIER) == ERROR_OK) {
+    state->security_vin_retry_timer = currentTime;
+    Log.info("Port %d - Security VIN retry %d sent successfully", port, state->security_vin_retry_count);
+  } else {
+    handleCommandError(port, "SECURITY_VIN_RETRY", -1);
+    // Still update timer to prevent rapid retries on error
+    state->security_vin_retry_timer = currentTime;
+  }
 }
 
 void PortFlagHandler::handleVINRequest(int port) {

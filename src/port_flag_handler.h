@@ -36,6 +36,12 @@ public:
   void processPortFlags(int port);
 
   /**
+   * Handle security violation VIN retry process
+   * @param port Port number
+   */
+  void handleSecurityViolationVINRetry(int port);
+
+  /**
    * Handle VIN request flag
    * @param port Port number
    */
