@@ -5,9 +5,11 @@
 SYSTEM_THREAD(ENABLED);
 SYSTEM_MODE(SEMI_AUTOMATIC);
 
-SerialLogHandler logHandler(LOG_LEVEL_INFO);
+SerialLogHandler logHandler(LOG_LEVEL_TRACE);
 
 retained uint8_t retainedLogs[2048];
+
+const std::chrono::milliseconds freeMemoryLogTime = 5min;
 
 // Basic includes only to avoid circular dependencies
 #include "Arduino.h"
@@ -44,17 +46,23 @@ void loop();
 void can_interrupt();
 void reportCANError(int err, const char *operation, bool report);
 int resetDevice(String command);
+int forceGetVin(String command);
+int forceGetPortStatus(String command);
 void logDebugInfo(const char *checkpoint);
 
 // New Architecture Functions
 void initializeArchitecture();
 void canThread();
+void port_request_thread();
+void canHealthMonitorThread();
+void internetCheckThread();
 void transferMessagesToProcessingQueue();  // NEW: Lightweight message transfer
 void processMessagesFromQueue();           // NEW: Heavy processing in main loop
 void processCANMessage(const can_frame &rawMessage);
 
 // System State Management
 void initializeSystem();
+void initializeLedger();
 void handleSystemLoop();
 void checkSystemHealth();
 void initializeHardware();
