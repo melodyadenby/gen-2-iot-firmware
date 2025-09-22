@@ -411,8 +411,8 @@ void initializeHardware() {
   unsigned long drainStart = millis();
   int totalDrained = 0;
 
-  // Drain for 10 seconds to cover entire startup sequence
-  while (millis() - drainStart < 10000) {
+  // Drain for 5 seconds to cover entire startup sequence
+  while (millis() - drainStart < 5000) {
     int drainedThisLoop = 0;
 
     // Drain all available messages
@@ -432,7 +432,7 @@ void initializeHardware() {
     delay(50); // 50ms between cycles
   }
 
-  Log.info("Extended drain complete: cleared %d messages over 10 seconds",
+  Log.info("Extended drain complete: cleared %d messages over 5 seconds",
            totalDrained);
 
   pinMode(CAN_INT, INPUT_PULLUP);
