@@ -169,12 +169,16 @@ void hardwareWatchdogHandler() {
 }
 
 void setup() {
+  // Enable reset info feature FIRST to get valid reset reasons
+  System.enableFeature(FEATURE_RESET_INFO);
+  System.enableFeature(FEATURE_RETAINED_MEMORY);
+
   // Enable out of memory handler for automatic memory monitoring
   System.on(out_of_memory, outOfMemoryHandler);
 
   initializeSystem();
 
-  // Log startup time and reset reason IMMEDIATELY
+  // Log startup time and reset reason with validation
   Log.info("=== DEVICE STARTUP AT %lu ms ===", millis());
   Log.info("System version: %s", System.version().c_str());
   Log.info("Free memory: %lu bytes", System.freeMemory());
@@ -469,9 +473,6 @@ void initializeParticle() {
   Particle.publishVitals(60);
   Particle.keepAlive(30);
 
-  // Enable system features
-  System.enableFeature(FEATURE_RESET_INFO);
-  System.enableFeature(FEATURE_RETAINED_MEMORY);
 
   // Wait for connection with timeout
   setLightRed();
