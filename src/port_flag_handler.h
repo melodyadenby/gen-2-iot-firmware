@@ -4,6 +4,7 @@
 #include "Arduino.h"
 #include "Particle.h"
 #include "port_state.h"
+#include "can.h"  // For can_frame struct
 
 // Forward declarations
 class PortStateManager;
@@ -224,6 +225,15 @@ public:
 
 private:
   int currentPort; // Current port being processed in round-robin
+  
+  // Pre-allocated CAN messages for port data requests to avoid runtime string operations
+  can_frame portDataRequests[MAX_PORTS + 1];
+
+  /**
+   * Initialize pre-built port messages for optimized sending
+   * Called once during construction to set up all port messages
+   */
+  void initializePortMessages();
 
   /**
    * Validate port number

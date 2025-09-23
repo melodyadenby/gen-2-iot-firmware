@@ -9,7 +9,41 @@
 // Global instance declared in main.h, defined in main.ino
 
 PortFlagHandler::PortFlagHandler(PortStateManager *manager)
-    : portStateManager(manager), currentPort(1) {}
+    : portStateManager(manager), currentPort(1) {
+  initializePortMessages();
+}
+
+void PortFlagHandler::initializePortMessages() {
+  // Pre-build all port data request messages to avoid runtime string operations
+  for (int port = 1; port <= MAX_PORTS; port++) {
+    can_frame& msg = portDataRequests[port];
+    
+    // Clear the entire message
+    memset(&msg, 0, sizeof(can_frame));
+    
+    // Set the CAN ID
+    msg.can_id = port;
+    
+    // Set the command prefix
+    msg.data[0] = 'R';
+    msg.data[1] = ',';
+    
+    // Pre-compute the port string ONCE
+    if (port < 10) {
+      // Single digit port
+      msg.data[2] = '0' + port;
+      msg.data[3] = '\0';
+    } else {
+      // Double digit port (10-16)
+      msg.data[2] = '1';
+      msg.data[3] = '0' + (port - 10);
+      msg.data[4] = '\0';
+    }
+    
+    // Set message length to full 8 bytes (remaining bytes are already zero)
+    msg.can_dlc = 8;
+  }
+}
 
 void PortFlagHandler::processAllPortFlags() {
   // Process flags for all ports in round-robin fashion
@@ -784,39 +818,8 @@ bool PortFlagHandler::sendGetPortData(int addr) {
     return false;
   }
 
-  struct can_frame reqMsg;
-
-  // Clear the entire CAN message buffer to avoid leftover data
-  memset(reqMsg.data, 0, sizeof(reqMsg.data));
-
-  reqMsg.can_id = addr;
-
-  // Construct the message: "R,<port>"
-  reqMsg.data[0] = 'R'; // Command prefix
-  reqMsg.data[1] = ',';
-
-  // Convert port to string for both single and double digit ports
-  char portStr[3];
-  snprintf(portStr, sizeof(portStr), "%d", addr);
-  size_t portStrLen = strlen(portStr);
-
-  // Copy port number string into message
-  for (size_t i = 0; i < portStrLen; i++) {
-    reqMsg.data[2 + i] = portStr[i];
-  }
-
-  // Null-terminate the message and pad remaining bytes
-  reqMsg.data[2 + portStrLen] = '\0';
-
-  // Pad remaining bytes with null terminators
-  for (size_t i = 2 + portStrLen + 1; i < 8; i++) {
-    reqMsg.data[i] = '\0';
-  }
-
-  // Set CAN message length to full 8 bytes
-  reqMsg.can_dlc = 8;
-
-  int result = sendCanMessage(reqMsg);
+  // Use pre-built message - NO STRING OPERATIONS!
+  int result = sendCanMessage(portDataRequests[addr]);
   if (result != ERROR_OK) {
     char error_buff[20];
     ReturnErrorString(result, error_buff, 20);
