@@ -25,6 +25,7 @@ char can_err_msg[200];
 bool CAN_ERROR = false;
 bool CELLULAR_CONNECTED = false;
 bool RESET_BROKER_FLAG = false;
+volatile bool CAN_INTERRUPT_FLAG = false;
 
 // Architecture components
 PortEventHandler *portEventHandler = nullptr;
@@ -127,12 +128,12 @@ struct CANErrorMonitor {
   unsigned long lastRxOverflowClear;
 } canErrorMonitor = {0, 0, 0, 0, false, 0, 0, 0, false, 0, 0, 0, 0};
 
-struct OutOfMemoryTracker{
-    bool wasOutOfMemory;
-    int outOfMemorySize;
-    int freeMemoryAtRestart;
-    unsigned long uptimeAtOOM;
-} oomTracker={false, 0, 0, 0};
+struct OutOfMemoryTracker {
+  bool wasOutOfMemory;
+  int outOfMemorySize;
+  int freeMemoryAtRestart;
+  unsigned long uptimeAtOOM;
+} oomTracker = {false, 0, 0, 0};
 
 can_frame messageQueue[CAN_QUEUE_SIZE]; // Increased from 50 to 100
 
@@ -150,7 +151,6 @@ ApplicationWatchdog *hardwareWatchdog;
 
 // Size of memory when out of memory
 int outOfMemory = -1;
-static unsigned long lastLog = 0;
 
 // Function declarations
 void checkInterruptHealth();
@@ -161,12 +161,11 @@ void prepareCANForInterrupt();
 void interruptibleDelay(unsigned long ms);
 void outOfMemoryHandler(system_event_t event, int param);
 void resetCANSuccessCounter();
+void handleCANInterrupt();
 
 // Hardware watchdog handler
 void hardwareWatchdogHandler() {
-  Log.info("HARDWARE WATCHDOG RESET at uptime %lu ms", millis());
-  delay(100);
-  System.reset(RESET_NO_WAIT);
+  System.reset(RESET_REASON_WATCHDOG, RESET_NO_WAIT);
 }
 
 void setup() {
@@ -177,8 +176,6 @@ void setup() {
 
   // Log startup time and reset reason IMMEDIATELY
   Log.info("=== DEVICE STARTUP AT %lu ms ===", millis());
-  Log.info("Reset reason: %d, Reset data: %d", System.resetReason(),
-           System.resetReasonData());
   Log.info("System version: %s", System.version().c_str());
   Log.info("Free memory: %lu bytes", System.freeMemory());
 
@@ -236,6 +233,9 @@ void setup() {
 void loop() {
   ApplicationWatchdog::checkin(); // Feed hardware watchdog
   DeviceInfoLedger::instance().loop();
+
+  if (CAN_INTERRUPT_FLAG)
+    handleCANInterrupt();
 
   // Check system health first before any operations
   checkSystemHealth();
@@ -482,7 +482,7 @@ void initializeParticle() {
   }
 
   // Log reset reason
-  // logResetReason();
+  logResetReason();
 
   setLightBlue();
   Log.info("Particle Cloud connected");
@@ -1080,7 +1080,6 @@ void port_request_thread() {
   }
 }
 
-
 void processCANMessage(const can_frame &rawMessage) {
   // Check for corrupted CAN ID (negative or excessively large values)
   if ((int32_t)rawMessage.can_id < 0 || rawMessage.can_id > 16777215) {
@@ -1123,96 +1122,157 @@ void processCANMessage(const can_frame &rawMessage) {
     logCANError(-1, "message_parsing");
   }
 }
+// Helper function - just checks, doesn't set flags
+bool checkCloudMessages() {
+  Particle.process();
 
-void can_interrupt() {
-  // Minimal interrupt handler - just queue the message
-  struct can_frame recMsg;
+  if (pendingCloudCommand) {
+    Log.info("Cloud command pending - pausing CAN processing");
+    return true; // Exit CAN processing
+  }
+  return false; // Continue CAN processing
+}
 
-  // Read the message
-  int readin = readCanMessage(&recMsg);
+void handleCANInterrupt() {
+  CAN_INTERRUPT_FLAG = false;
 
-  if (readin == ERROR_OK) {
-    // Comprehensive corruption and gibberish filtering
-    // 1. Basic validity checks
-    if ((int32_t)recMsg.can_id < 0 || recMsg.can_id == 0 ||
-        recMsg.can_id > MAX_PORTS || recMsg.can_dlc > 8) {
-      // Don't queue obviously corrupted messages
-      return; // Silent discard for performance
+  unsigned long startTime = millis();
+  const unsigned long MAX_TIME = 100; // 100ms max processing time
+  int messagesProcessed = 0;
+  unsigned long lastCloudCheck = millis();
+
+  // Keep reading until empty or timeout
+  while ((millis() - startTime) < MAX_TIME) {
+
+    // Check cloud every 20ms OR every 10 messages
+    if ((millis() - lastCloudCheck > 20) ||
+        (messagesProcessed > 0 && messagesProcessed % 10 == 0)) {
+
+      if (checkCloudMessages()) {
+        return; // Exit to handle cloud command
+      }
+      lastCloudCheck = millis();
     }
 
-    // 2. Data content validation - filter out gibberish
-    bool hasValidData = false;
-    bool hasGibberish = false;
+    struct can_frame recMsg;
 
-    for (int i = 0; i < recMsg.can_dlc; i++) {
-      uint8_t byte = recMsg.data[i];
+    // Your original read logic - just try to read a message
+    int readin = readCanMessage(&recMsg);
 
-      // Check for valid ASCII characters (printable range)
-      if ((byte >= 0x20 && byte <= 0x7E) || byte == 0x00) {
-        hasValidData = true;
+    if (readin == ERROR_OK) {
+      // YOUR EXISTING VALIDATION CODE - unchanged
+      // 1. Basic validity checks
+      if ((int32_t)recMsg.can_id < 0 || recMsg.can_id == 0 ||
+          recMsg.can_id > MAX_PORTS || recMsg.can_dlc > 8) {
+        continue; // Skip this message
       }
-      // Check for obvious gibberish (control chars, high ASCII)
-      else if (byte < 0x20 || byte > 0x7E) {
-        // Allow some common control characters
-        if (byte != 0x0A && byte != 0x0D && byte != 0x09) // LF, CR, TAB
-        {
-          hasGibberish = true;
+
+      // 2. Data content validation - filter out gibberish
+      bool hasValidData = false;
+      bool hasGibberish = false;
+
+      for (int i = 0; i < recMsg.can_dlc; i++) {
+        uint8_t byte = recMsg.data[i];
+
+        if ((byte >= 0x20 && byte <= 0x7E) || byte == 0x00) {
+          hasValidData = true;
+        } else if (byte < 0x20 || byte > 0x7E) {
+          if (byte != 0x0A && byte != 0x0D && byte != 0x09) {
+            hasGibberish = true;
+          }
         }
       }
-    }
 
-    // Reject if mostly gibberish or no valid data
-    if (hasGibberish && !hasValidData) {
-      return; // Silent discard of gibberish
-    }
-
-    // 3. Message pattern validation - must start with valid command
-    if (recMsg.can_dlc > 0) {
-      char firstChar = (char)recMsg.data[0];
-      // Valid message types: D(status), K(VIN), T(temp), H(heartbeat), etc.
-      if (firstChar != 'D' && firstChar != 'K' && firstChar != 'T' &&
-          firstChar != 'H' && firstChar != 'U' && firstChar != 'C' &&
-          firstChar != 'V' && firstChar != 'F' && firstChar != 'E') {
-        return; // Silent discard of invalid command
+      if (hasGibberish && !hasValidData) {
+        continue; // Skip gibberish
       }
-    }
 
-    // Add to queue if there's space
-    if (messageCount < CAN_QUEUE_SIZE) {
-      incrementMessageCounter();
-      messageQueue[queueTail] = recMsg;
-      queueTail = (queueTail + 1) % CAN_QUEUE_SIZE;
-      messageCount++;
-      // Track max queue depth
-      if (messageCount > maxQueueDepth) {
-        maxQueueDepth = messageCount;
+      // 3. Message pattern validation
+      if (recMsg.can_dlc > 0) {
+        char firstChar = (char)recMsg.data[0];
+        if (firstChar != 'D' && firstChar != 'K' && firstChar != 'T' &&
+            firstChar != 'H' && firstChar != 'U' && firstChar != 'C' &&
+            firstChar != 'V' && firstChar != 'F' && firstChar != 'E') {
+          continue; // Skip invalid command
+        }
       }
+
+      // YOUR EXISTING QUEUE CODE - unchanged
+      if (messageCount < CAN_QUEUE_SIZE) {
+        incrementMessageCounter();
+        messageQueue[queueTail] = recMsg;
+        queueTail = (queueTail + 1) % CAN_QUEUE_SIZE;
+        messageCount++;
+        messagesProcessed++;
+
+        if (messageCount > maxQueueDepth) {
+          maxQueueDepth = messageCount;
+        }
+      } else {
+        // Queue full
+        queueOverflow = true;
+        static uint32_t droppedMessages = 0;
+        static unsigned long lastDropLog = 0;
+        droppedMessages++;
+        totalMessagesDropped++;
+
+        if (millis() - lastDropLog > 5000) {
+          Log.info("Queue full - dropped %lu new messages", droppedMessages);
+          logCANError(-2, "queue_overflow");
+          lastDropLog = millis();
+        }
+      }
+
+    } else if (readin == mcp2515.ERROR_NOMSG) {
+      // No more messages - we've drained the buffer
+      break;
+
     } else {
-      // Queue is full - drop the NEW message, not existing ones
-      queueOverflow = true;
-      static uint32_t droppedMessages = 0;
-      static unsigned long lastDropLog = 0;
-      droppedMessages++;
-      totalMessagesDropped++;
-
-      // Log periodically, not every drop
-      if (millis() - lastDropLog > 5000) {
-        Log.info("Queue full - dropped %lu new messages (keeping existing)",
-                 droppedMessages);
-        logCANError(-2, "queue_overflow");
-        lastDropLog = millis();
+      // Read error
+      static unsigned long lastErrorLog = 0;
+      if (millis() - lastErrorLog > 1000) {
+        logCANError(readin, "can_read_interrupt");
+        lastErrorLog = millis();
       }
-    }
-  } else {
-    // Log read errors (but not every single one to avoid spam)
-    static unsigned long lastErrorLog = 0;
-    if (millis() - lastErrorLog > 1000) // Log max once per second
-    {
-      logCANError(readin, "can_read_interrupt");
-      lastErrorLog = millis();
+      break; // Exit on error
     }
   }
+
+  // Clear any pending interrupts
+  mcp2515.clearInterrupts();
+
+  // Check if we need to continue processing
+  uint8_t irq = mcp2515.getInterrupts();
+  if (irq != 0) {
+    CAN_INTERRUPT_FLAG = true; // More messages to process next loop
+    if (messagesProcessed > 20) {
+      Log.info("CAN burst: processed %d messages, more pending",
+               messagesProcessed);
+    }
+  }
+
+  // Log if we processed a lot of messages (like at startup)
+  if (messagesProcessed > 20) {
+    Log.info("Processed CAN burst: %d messages", messagesProcessed);
+  }
+
+  // Clear interrupts after we're done processing
+  mcp2515.clearInterrupts();
+
+  // Check if interrupt line is still asserted
+  // (This is just for logging, not to set the flag)
+  if (digitalRead(CAN_INT) == LOW) {
+    Log.info("CAN interrupt still asserted after processing %d messages",
+             messagesProcessed);
+    // The hardware will trigger can_interrupt() again naturally
+  }
+
+  if (messagesProcessed > 20) {
+    Log.info("Processed CAN burst: %d messages", messagesProcessed);
+  }
 }
+
+void can_interrupt() { CAN_INTERRUPT_FLAG = true; }
 
 // ========================================
 // CAN Error Monitoring and Recovery
@@ -1580,11 +1640,9 @@ void emergencyReset(const char *reason) {
 // 1. Soft recovery (disconnect/reconnect) after 30 seconds
 // 2. Hard reset after 1 minute, but only if system is in safe state
 void internetCheckThread() {
-  static bool connected = true;
   static bool did_disconnect = false;
   static unsigned long disconnectTime = 0;
   static unsigned long lastCheckTime = 0;
-  static bool calledConnect = false;
   while (true) {
     // Non-blocking check every 5 seconds
     if (millis() - lastCheckTime > 5000) {
