@@ -485,7 +485,10 @@ void PortEventHandler::handleUnlockMessage(const ParsedCANMessage &message) {
     state->unlock_successful = true;
     state->send_unlock_flag = false;
     state->emergency_exit_flag = false;
-    state->check_unlock_status = true;
+    if (state->VIN[0] != '\0') {
+        // if a latch breaks in a field, this check prevents a spam
+        state->check_unlock_status = true; //enables a send to cloud of a successful unlock
+    }
   }
 
   Serial.printlnf("Unlock response from port %d", port);
