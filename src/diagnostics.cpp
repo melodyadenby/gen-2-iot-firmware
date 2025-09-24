@@ -59,6 +59,12 @@ uint32_t calculateDiagnosticsChecksum(const DiagnosticData* data) {
 void initializeDiagnostics() {
     Serial.println("Initializing diagnostics system...");
     
+    // Report EEPROM usage
+    size_t diagnosticsSize = sizeof(DiagnosticData);
+    Serial.printlnf("DiagnosticData size: %d bytes (%.1f%% of 4KB EEPROM)", 
+                    diagnosticsSize, (diagnosticsSize * 100.0) / 4096.0);
+    Serial.printlnf("EEPROM remaining: %d bytes", 4096 - diagnosticsSize);
+    
     // Try to load diagnostics from EEPROM
     if (loadDiagnosticsFromEEPROM()) {
         // Copy to lastBootDiagnostics for comparison
