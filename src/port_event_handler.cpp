@@ -142,7 +142,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
         state->security_violation_retry_active = true;
         state->security_vin_retry_count = 0;
         state->security_vin_retry_timer = millis();
-        
+
         // Notify cloud of security violation
         char buffer[64];
         snprintf(buffer, sizeof(buffer),
@@ -200,7 +200,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
         state->security_violation_retry_active = true;
         state->security_vin_retry_count = 0;
         state->security_vin_retry_timer = millis();
-        
+
         // Notify cloud of security violation
         char buffer[64];
         snprintf(buffer, sizeof(buffer),
@@ -228,7 +228,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     state->send_vin_to_cloud_flag = false;
     state->awaiting_cloud_vin_resp = false;
     state->cloud_vin_resp_timer = 0;
-    
+
     // Clear security violation retry state
     state->security_violation_retry_active = false;
     state->security_vin_retry_count = 0;
@@ -399,7 +399,7 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
 
     state->vin_request_flag = false;
     state->vin_retry_count = 0; // Reset retry counter on successful completion
-    
+
     // Clear security violation retry state since VIN is now complete
     if (state->security_violation_retry_active) {
       Log.info("Port %d - VIN complete, canceling security violation retry process", port);
@@ -503,7 +503,10 @@ void PortEventHandler::handleUnlockMessage(const ParsedCANMessage &message) {
     state->unlock_successful = true;
     state->send_unlock_flag = false;
     state->emergency_exit_flag = false;
-    state->check_unlock_status = true;
+    if (state->VIN[0] != '\0') {
+        // if a latch breaks in a field, this check prevents a spam
+        state->check_unlock_status = true; //enables a send to cloud of a successful unlock
+    }
   }
 
   Log.info("Unlock response from port %d", port);
