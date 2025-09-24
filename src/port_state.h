@@ -14,6 +14,7 @@ const int VIN_LENGTH = 16;
 const int MAX_UNLOCK_RETRY = 3;
 // Port State Structure
 struct PortState {
+  int last_msg_update_time = 0; // Last time we received a CAN message from this port
   bool DID_PORT_CHECK = false;
   bool docked;            // Is port docked
   bool charging;          // Is port charging

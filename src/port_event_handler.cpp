@@ -16,6 +16,12 @@ void PortEventHandler::handleCANMessage(const ParsedCANMessage &message) {
     return;
   }
 
+  // Update last message received time for this port
+  PortState *state = getPortState(message.sourcePort);
+  if (state) {
+    state->last_msg_update_time = (int)Time.now();
+  }
+
   logMessageProcessing(message);
 
   switch (message.messageType) {
@@ -25,7 +31,6 @@ void PortEventHandler::handleCANMessage(const ParsedCANMessage &message) {
   case CAN_MSG_VIN: {
     // Check if this is a spontaneous VIN (not requested AND VIN buffer already
     // full)
-    PortState *state = getPortState(message.sourcePort);
     if (state && !state->vin_request_flag && strlen(state->VIN) >= VIN_LENGTH) {
       // Spontaneous VIN with full buffer - port is starting new session
       handleSpontaneousVINMessage(message);

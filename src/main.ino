@@ -14,6 +14,7 @@
 #include "port_flag_handler.h"
 #include "port_state.h"
 #include "utils.h"
+#include "diagnostics.h"
 #include <ArduinoJson.h>
 #include <MQTT.h>
 #include <SPI.h>
@@ -112,6 +113,7 @@ bool interruptStuckDetected = false;
 // after getPortData()
 const unsigned long INTERRUPT_TIMEOUT = PORT_CHECK_INTERVAL * 3;
 const unsigned long INTERRUPT_CHECK_INTERVAL = 10000; // Check every 10 seconds
+static unsigned long lastLoopTime = 0;
 
 // Global hardware watchdog object
 ApplicationWatchdog *hardwareWatchdog;
@@ -123,7 +125,11 @@ void checkTransmissionReceptionBalance();
 void handleRxOverflowWithEscalation(unsigned long currentTime);
 
 // Hardware watchdog handler
-void hardwareWatchdogHandler() { System.reset(RESET_NO_WAIT); }
+void hardwareWatchdogHandler() { 
+  // Note: Cannot write to EEPROM in interrupt context
+  // Diagnostics will show watchdog reset reason on next boot
+  System.reset(RESET_NO_WAIT); 
+}
 
 void setup() {
   initializeSystem();
@@ -166,9 +172,15 @@ void loop() {
   DeviceInfoLedger::instance().loop();
   handleMQTTClientLoop();
 
-  static unsigned long lastLoopTime = 0;
   unsigned long currentTime = millis();
-
+  
+  // Update diagnostics every second
+  static unsigned long lastDiagnosticsUpdate = 0;
+  if (currentTime - lastDiagnosticsUpdate > 1000) {
+    updateDiagnostics();
+    lastDiagnosticsUpdate = currentTime;
+  }
+  
   // Detect if main loop is running too slowly (potential freeze indicator)
   if (lastLoopTime > 0 && (currentTime - lastLoopTime) > 5000) {
     Serial.printlnf("WARNING: Main loop delay detected: %lu ms",
@@ -208,6 +220,10 @@ void initializeSystem() {
   Serial.printlnf("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
   Serial.printlnf("Device ID: %s", Particle.deviceID().c_str());
   Serial.printlnf("Environment: %s", getCurrentEnvironment());
+  
+  // Initialize diagnostics system (will load from EEPROM if available)
+  initializeDiagnostics();
+  
   Serial.printlnf("System initialized");
 }
 void initializeLedger() {
@@ -1140,6 +1156,10 @@ int resetDevice(String command) {
                     areCredentialsValid() ? "yes" : "no");
     Serial.printlnf("CAN errors in last period: %d", can_error_count);
   }
+  
+  // Save diagnostics before reset
+  logDiagnosticsBeforeReset(command.c_str());
+  
   // if (isMQTTConnected()) {
   //   Serial.printlnf("Closing MQTT connection...");
   //   //disconnectMQTT();
@@ -1244,6 +1264,10 @@ void emergencyReset(const char *reason) {
   Serial.printlnf("Error Stats - Consecutive: %d, Total: %lu",
                   canErrorMonitor.consecutiveErrors,
                   canErrorMonitor.totalErrors);
+  
+  // Save diagnostics before emergency reset
+  logDiagnosticsBeforeReset(reason);
+  
   delay(200); // Ensure message is sent
   System.reset();
 }
@@ -1287,6 +1311,7 @@ void internetCheckThread() {
           Serial.printlnf("RESET: Internet disconnected for %lu ms - "
                           "performing device reset",
                           disconnectedDuration);
+          logDiagnosticsBeforeReset("Internet disconnected timeout");
           resetDevice("");
         }
       } else {
@@ -1708,6 +1733,7 @@ void handleRxOverflowWithEscalation(unsigned long currentTime) {
       // Force immediate restart
       Serial.printlnf(
           "*** FORCING SYSTEM RESTART DUE TO PERSISTENT RX OVERFLOW ***");
+      logDiagnosticsBeforeReset("Persistent RX buffer overflow");
       delay(100); // Brief delay for serial output
       System.reset(RESET_NO_WAIT);
     }
