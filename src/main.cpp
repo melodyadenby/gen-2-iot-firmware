@@ -59,7 +59,7 @@ const int MAX_CAN_ERRORS_PER_MINUTE = 50;
 const unsigned long CAN_ERROR_RESET_INTERVAL = 60000; // 1 minute
 
 // Internet connectivity monitoring constants
-const unsigned long INTERNET_DISCONNECT_RESET_TIMEOUT = 60000; // 1 minute
+const unsigned long INTERNET_DISCONNECT_RESET_TIMEOUT = 120000; // 2 minutes
 const unsigned long INTERNET_RESET_COOLDOWN =
     300000; // 5 minutes between resets
 
