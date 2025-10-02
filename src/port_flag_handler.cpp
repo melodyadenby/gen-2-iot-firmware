@@ -17,17 +17,17 @@ void PortFlagHandler::initializePortMessages() {
   // Pre-build all port data request messages to avoid runtime string operations
   for (int port = 1; port <= MAX_PORTS; port++) {
     can_frame& msg = portDataRequests[port];
-    
+
     // Clear the entire message
     memset(&msg, 0, sizeof(can_frame));
-    
+
     // Set the CAN ID
     msg.can_id = port;
-    
+
     // Set the command prefix
     msg.data[0] = 'R';
     msg.data[1] = ',';
-    
+
     // Pre-compute the port string ONCE
     if (port < 10) {
       // Single digit port
@@ -39,7 +39,7 @@ void PortFlagHandler::initializePortMessages() {
       msg.data[3] = '0' + (port - 10);
       msg.data[4] = '\0';
     }
-    
+
     // Set message length to full 8 bytes (remaining bytes are already zero)
     msg.can_dlc = 8;
   }
@@ -109,7 +109,7 @@ void PortFlagHandler::handleSecurityViolationVINRetry(int port) {
   }
 
   unsigned long currentTime = millis();
-  
+
   // Check if 10 seconds have passed since last retry
   if (currentTime - state->security_vin_retry_timer < 10000) {
     return; // Still waiting for next retry interval
@@ -126,17 +126,17 @@ void PortFlagHandler::handleSecurityViolationVINRetry(int port) {
 
   // Check if we've exhausted all 3 retry attempts
   if (state->security_vin_retry_count >= 3) {
-    Log.info("Port %d - Security VIN retries exhausted (%d attempts), triggering EMERGENCY_EXIT", 
+    Log.info("Port %d - Security VIN retries exhausted (%d attempts), triggering EMERGENCY_EXIT",
              port, state->security_vin_retry_count);
-    
+
     // Clear retry state
     state->security_violation_retry_active = false;
     state->security_vin_retry_count = 0;
     state->security_vin_retry_timer = 0;
-    
+
     // Now trigger emergency exit
     state->emergency_exit_flag = true;
-    
+
     Log.info("Port %d - Emergency exit triggered for VIN timeout", port);
     return;
   }
@@ -144,9 +144,9 @@ void PortFlagHandler::handleSecurityViolationVINRetry(int port) {
   // Send VIN request
   state->security_vin_retry_count++;
   Log.info("Port %d - Security violation VIN retry %d/3", port, state->security_vin_retry_count);
-  
+
   logFlagActivity(port, "SECURITY_VIN_RETRY", "Sending VIN request");
-  
+
   if (sendPortCommand(port, 'K', nullptr, 10 * SEC_TO_MS_MULTIPLIER) == ERROR_OK) {
     state->security_vin_retry_timer = currentTime;
     Log.info("Port %d - Security VIN retry %d sent successfully", port, state->security_vin_retry_count);
@@ -517,10 +517,9 @@ void PortFlagHandler::handleChargeSuccess(int port) {
   PortState *state = getPortState(port);
   if (state) {
     // // Publish charge success to cloud: C,variant,port,1
-    // char buffer[16];
-    // char variantStr[2] = {state->charge_varient, '\0'};
-    // formatCloudMessage("C", variantStr, port, "1", buffer, sizeof(buffer));
-    // // publishToCloud(buffer);
+    char buffer[16];
+    formatCloudMessage("C", "1", port, "1", buffer, sizeof(buffer));
+     publishToCloud(buffer);
 
     state->check_charge_status = false;
     state->charge_successful = false;
@@ -534,10 +533,9 @@ void PortFlagHandler::handleChargeFailure(int port) {
   PortState *state = getPortState(port);
   if (state) {
     // // Publish charge failure to cloud: C,variant,port,0
-    // char buffer[16];
-    // char variantStr[2] = {state->charge_varient, '\0'};
-    // formatCloudMessage("C", variantStr, port, "0", buffer, sizeof(buffer));
-    // // publishToCloud(buffer);
+    char buffer[16];
+    formatCloudMessage("C", "0", port, "0", buffer, sizeof(buffer));
+    publishToCloud(buffer);
 
     state->check_charge_status = false;
     state->charge_successful = false;

@@ -19,7 +19,7 @@ const int HOUR_TO_MS_MULTIPLIER = 60 * MIN_TO_MS_MULTIPLIER;
 #define ENV_LOCAL 2
 
 // Set the current environment
-#define ENV ENV_PROD
+#define ENV ENV_LOCAL
 
 // Environment-specific Configuration
 #if ENV == ENV_QA

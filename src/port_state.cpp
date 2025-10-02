@@ -272,7 +272,7 @@ void clearPortFlags(int portNumber) {
 }
 
 char *getPortStatusRange(int startPort, int endPort) {
-  static char buffer[256]; // Static buffer to return
+  static char buffer[512]; // Buffer for port status
   memset(buffer, 0, sizeof(buffer));
 
   if (startPort < 1 || endPort > MAX_PORTS || startPort > endPort) {
@@ -281,20 +281,25 @@ char *getPortStatusRange(int startPort, int endPort) {
     return buffer;
   }
 
-  // Start building the response: P,0,status1,status2,status3,...
+  // Start building the response: P,0,port:docked:charging,port:docked:charging,...
   strcpy(buffer, "P,0");
 
   for (int port = startPort; port <= endPort; port++) {
     struct PortState *portState = getPortState(port);
-    char portStatus[8];
+    char portStatus[32]; // Individual port status
 
     if (portState) {
-      // Format: just the status value (1=docked, 0=empty)
-      snprintf(portStatus, sizeof(portStatus), ",%d",
-               portState->docked ? 1 : 0);
+      // Format: ,port:docked:charging (1 for true, 0 for false)
+      snprintf(portStatus, sizeof(portStatus), 
+               ",%d:%d:%d",
+               port,
+               portState->docked ? 1 : 0,
+               portState->charging ? 1 : 0);
     } else {
-      // Invalid port - use 0
-      snprintf(portStatus, sizeof(portStatus), ",0");
+      // Invalid port - use 0 for both states
+      snprintf(portStatus, sizeof(portStatus), 
+               ",%d:0:0",
+               port);
     }
 
     // Check if adding this would exceed buffer size

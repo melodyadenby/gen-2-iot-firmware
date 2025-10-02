@@ -55,7 +55,8 @@ struct ParsedCANMessage {
 
     // Charge response data (C)
     struct {
-      char variant;
+      char port;
+      char status;
     } chargeData;
   };
 };

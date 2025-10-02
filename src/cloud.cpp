@@ -19,7 +19,10 @@ bool portStatusRequestPending = false;
 unsigned long portStatusRequestTime = 0;
 bool portStatusWaitingForPoll = false;
 
-// Global message history for deduplication (MAX_PORTS + 1 for non-port messages at index 0)
+const unsigned long WAIT_TIME = PORT_CHECK_INTERVAL + (PORT_CHECK_INTERVAL / 2);
+
+// Global message history for deduplication (MAX_PORTS + 1 for non-port messages
+// at index 0)
 struct MessageHistory messageHistory[MAX_PORTS + 1] = {0};
 
 // External flag from main.ino for cloud command priority
@@ -81,16 +84,18 @@ void processCloudCommand(char cmd, char variant, int port, char btn,
     if (isValidPort(port) && portState) {
       // Security validation: Only allow charging if properly authorized
       if (portEventHandler && portEventHandler->isChargingAuthorized(port)) {
-        portState->check_charge_status = true;
         portState->charge_varient = '2'; // variant;
-        portState->send_charge_flag = true;
-        portState->awaiting_cloud_vin_resp = false;
-        Log.info("Charge command authorized for port %d, variant %c\n",
-                        port, variant);
+        if (!portState->charging) {
+          portState->check_charge_status = true;
+          portState->send_charge_flag = true;
+          portState->awaiting_cloud_vin_resp = false;
+        }
+        Log.info("Charge command authorized for port %d, variant %c\n", port,
+                 variant);
       } else {
         Log.info("SECURITY VIOLATION: Charge command denied for port %d "
-                        "- not authorized\n",
-                        port);
+                 "- not authorized\n",
+                 port);
       }
     } else {
       Log.info("Invalid port for charge command: %d\n", port);
@@ -132,9 +137,8 @@ void processCloudCommand(char cmd, char variant, int port, char btn,
         portStatusWaitingForPoll = true;
         Log.info("Port status request stored: %s", portStatusRequest);
         Log.info("Will wait for fresh port data before responding");
-        Log.info(
-            "DEBUG: Wait time will be %lu ms (PORT_CHECK_INTERVAL=%lu ms)",
-            PORT_CHECK_INTERVAL + 5000, PORT_CHECK_INTERVAL);
+        Log.info("DEBUG: Wait time will be %lu ms (PORT_CHECK_INTERVAL=%lu ms)",
+                 PORT_CHECK_INTERVAL + 5000, PORT_CHECK_INTERVAL);
       } else {
         Log.info("Invalid P command format - missing port range");
       }
@@ -159,17 +163,21 @@ void processCloudCommand(char cmd, char variant, int port, char btn,
       Log.info("VIN Validated, charging allowed");
       // Security validation: Only allow charging if properly authorized
       if (portEventHandler && portEventHandler->isChargingAuthorized(port)) {
-        portState->check_charge_status = true;
-        portState->charge_varient = '2'; // variant;
-        portState->send_charge_flag = true;
+
+          portState->charge_varient = '2'; // variant;
+          if (!portState->charging) {
+            portState->check_charge_status = true;
+            portState->send_charge_flag = true;
+            portState->awaiting_cloud_vin_resp = false;
+          }
         portState->awaiting_cloud_vin_resp = false;
         Log.info(
             "Cloud VIN validation successful - charging authorized for port %d",
             port);
       } else {
         Log.info("SECURITY VIOLATION: Cloud VIN validation received but "
-                        "port %d not properly authorized",
-                        port);
+                 "port %d not properly authorized",
+                 port);
         portState->awaiting_cloud_vin_resp = false;
       }
       // Log.info("Printing each character with index:");
@@ -261,9 +269,8 @@ void processCloudCommand(char cmd, char variant, int port, char btn,
       portStatusWaitingForPoll = true;
       Log.info("Port status request stored: %s", portStatusRequest);
       Log.info("Will wait for fresh port data before responding");
-      Log.info(
-          "DEBUG: Wait time will be %lu ms (PORT_CHECK_INTERVAL=%lu ms)",
-          PORT_CHECK_INTERVAL + 5000, PORT_CHECK_INTERVAL);
+      Log.info("DEBUG: Wait time will be %lu ms (PORT_CHECK_INTERVAL=%lu ms)",
+               PORT_CHECK_INTERVAL + 5000, PORT_CHECK_INTERVAL);
     } else {
       Log.info("Invalid P command format - missing port range");
     }
@@ -276,25 +283,20 @@ void processCloudCommand(char cmd, char variant, int port, char btn,
 }
 
 void sendPortStatus() {
-  Log.info(
-      "DEBUG: sendPortStatus() called - checking if this should happen");
-  Log.info(
-      "DEBUG: portStatusRequestPending=%s, portStatusWaitingForPoll=%s",
-      portStatusRequestPending ? "true" : "false",
-      portStatusWaitingForPoll ? "true" : "false");
+  Log.info("DEBUG: sendPortStatus() called - checking if this should happen");
+  Log.info("DEBUG: portStatusRequestPending=%s, portStatusWaitingForPoll=%s",
+           portStatusRequestPending ? "true" : "false",
+           portStatusWaitingForPoll ? "true" : "false");
   Log.info("DEBUG: Request time=%lu, Current time=%lu, Elapsed=%lu ms",
-                  portStatusRequestTime, millis(),
-                  millis() - portStatusRequestTime);
+           portStatusRequestTime, millis(), millis() - portStatusRequestTime);
 
   // Check if this is being called too early
   if (portStatusWaitingForPoll && portStatusRequestTime > 0) {
     unsigned long elapsed = millis() - portStatusRequestTime;
-    unsigned long requiredWait =
-        PORT_CHECK_INTERVAL + (PORT_CHECK_INTERVAL / 2);
-    if (elapsed < requiredWait) {
+    if (elapsed < WAIT_TIME) {
       Log.error("ERROR: sendPortStatus() called too early! Only %lu ms "
-                      "elapsed, need %lu ms",
-                      elapsed, requiredWait);
+                "elapsed, need %lu ms",
+                elapsed, WAIT_TIME);
       return; // Don't send status yet
     }
   }
@@ -329,10 +331,9 @@ void sendPortStatus() {
   if (port_start != -1 && port_end != -1) {
     char *retI = getPortStatusRange(port_start, port_end);
 
-    Log.info("sending port status");
-    Log.info("Sending Buffer: ");
-    Log.info(retI);
-    publishJuiseMessage(retI); // Assuming publishCloud is defined elsewhere
+    Log.info("Sending port status for ports %d-%d", port_start, port_end);
+    Log.info("Port Status: %s", retI);
+    publishJuiseMessage(retI);
   }
 }
 
@@ -353,13 +354,11 @@ void checkPortStatusRequest() {
   unsigned long currentTime = millis();
   // Wait for one full PORT_CHECK_INTERVAL plus buffer to ensure all ports
   // polled
-  const unsigned long WAIT_TIME =
-      PORT_CHECK_INTERVAL + (PORT_CHECK_INTERVAL / 2);
 
   if (currentTime - portStatusRequestTime >= WAIT_TIME) {
     Log.info("Port status wait period complete (%lu ms, waited %lu ms) "
-                    "- sending response",
-                    WAIT_TIME, currentTime - portStatusRequestTime);
+             "- sending response",
+             WAIT_TIME, currentTime - portStatusRequestTime);
     portStatusWaitingForPoll = false;
     sendPortStatus();
     clearPortStatusRequest();
@@ -370,8 +369,8 @@ void checkPortStatusRequest() {
       unsigned long remainingWait =
           WAIT_TIME - (currentTime - portStatusRequestTime);
       Log.info("Waiting %lu more ms for fresh port data "
-                      "(WAIT_TIME=%lu ms)...",
-                      remainingWait, WAIT_TIME);
+               "(WAIT_TIME=%lu ms)...",
+               remainingWait, WAIT_TIME);
       lastWaitLog = currentTime;
     }
   }
@@ -383,7 +382,7 @@ int publishJuiseMessage(const char *message) {
   // Try to extract port number from message
   // Message formats: "U,0,10,1" or "C,2,10,VIN" or "H,0,1" etc.
   int port = 0;
-  char tempMessage[128];
+  char tempMessage[1024];
   strncpy(tempMessage, message, sizeof(tempMessage) - 1);
   tempMessage[sizeof(tempMessage) - 1] = '\0';
 
@@ -411,8 +410,8 @@ int publishJuiseMessage(const char *message) {
         currentTime - messageHistory[port].lastSentTime;
     if (timeSinceLastSent <
         MESSAGE_DEDUP_WINDOW_MS) { // Configurable deduplication window
-      Log.info("DUPLICATE SUPPRESSED (sent %lu ms ago): %s",
-                      timeSinceLastSent, message);
+      Log.info("DUPLICATE SUPPRESSED (sent %lu ms ago): %s", timeSinceLastSent,
+               message);
       return 1; // Return success but don't actually send
     }
   }

@@ -235,7 +235,7 @@ void CANMessageProcessor::parseChargeMessage(const uint8_t *payload,
   }
 
   // Extract charge variant from position 2: C,[variant]
-  parsedMsg.chargeData.variant = payload[2];
+  parsedMsg.chargeData.status = payload[2];
 
   parsedMsg.isValid = true;
 }
