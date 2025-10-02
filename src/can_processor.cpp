@@ -1,5 +1,6 @@
 #include "can_processor.h"
 #include "config.h"
+#include "eeprom.h"
 #include <string.h>
 
 // Global instance
@@ -28,7 +29,12 @@ CANMessageProcessor::parseMessage(const can_frame &rawMessage)
 
   // Determine message type from first byte
   parsedMsg.messageType = static_cast<CANMessageType>(rawMessage.data[0]);
-
+  PortState *state = getPortState(rawMessage.can_id);
+  if (state != nullptr) {
+    state->last_port_message = millis();
+    // Mark that EEPROM needs saving
+    eepromManager.savePortMessageTime(rawMessage.can_id);
+  }
   // Parse based on message type
   switch (parsedMsg.messageType)
   {

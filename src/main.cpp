@@ -6,6 +6,7 @@
 #include "cloud.h"
 #include "config.h"
 #include "credentials.h"
+#include "eeprom.h"
 #include "fixes/json_compat.h"
 #include "lights.h"
 #include "logging.h"
@@ -168,6 +169,57 @@ void hardwareWatchdogHandler() {
   System.reset(RESET_REASON_WATCHDOG, RESET_NO_WAIT);
 }
 
+// EEPROM Debug Cloud Functions
+int eepromStatus(String command) {
+  Log.info("EEPROM Status requested via cloud function");
+  eepromManager.printEEPROMStatus();
+  return 1;
+}
+
+int eepromForceSave(String command) {
+  Log.info("EEPROM Force Save requested via cloud function");
+  eepromManager.forceSave();
+  return 1;
+}
+
+int eepromClear(String command) {
+  Log.info("EEPROM Clear requested via cloud function");
+  if (command == "CONFIRM") {
+    eepromManager.clearEEPROM();
+    eepromManager.init();  // Reinitialize after clear
+    Log.info("EEPROM cleared and reinitialized");
+    return 1;
+  } else {
+    Log.warn("EEPROM clear rejected - must send 'CONFIRM' as parameter");
+    return 0;
+  }
+}
+
+int getPortMessageTimes(String command) {
+  Log.info("Port message times requested via cloud function");
+  String result = "{";
+  bool first = true;
+  
+  for (int i = 1; i <= MAX_PORTS; i++) {
+    PortState *state = getPortState(i);
+    if (state && state->last_port_message > 0) {
+      if (!first) result += ",";
+      result += "\"" + String(i) + "\":" + String(state->last_port_message);
+      first = false;
+    }
+  }
+  
+  result += "}";
+  Log.info("Port message times: %s", result.c_str());
+  return 1;
+}
+
+// Reset handler to save EEPROM data before shutdown
+void resetHandler() {
+  Log.info("System reset detected - saving EEPROM data...");
+  eepromManager.forceSave();
+}
+
 void setup() {
   // Enable reset info feature FIRST to get valid reset reasons
   System.enableFeature(FEATURE_RESET_INFO);
@@ -175,6 +227,9 @@ void setup() {
 
   // Enable out of memory handler for automatic memory monitoring
   System.on(out_of_memory, outOfMemoryHandler);
+  
+  // Enable reset handler to save EEPROM data before shutdown
+  System.on(reset, resetHandler);
 
   initializeSystem();
 
@@ -243,6 +298,9 @@ void loop() {
 
   // Check system health first before any operations
   checkSystemHealth();
+
+  // Periodically save port message times to EEPROM
+  eepromManager.checkAndSave();
 
   // Process cloud messages FIRST to receive any pending commands
   Particle.process();
@@ -335,6 +393,9 @@ void initializeSystem() {
   initializePorts();
   initializeCredentials();
   initializeLedger();
+  
+  // Initialize EEPROM manager to restore port message times
+  eepromManager.init();
 
   Log.info("*** KUHMUTE IoT V %s ***", BUILD_VERSION);
   Log.info("Device ID: %s", Particle.deviceID().c_str());
@@ -457,6 +518,12 @@ void initializeParticle() {
   Particle.function("getPortVin", forceGetVin);
   Particle.function("getPortStatus", forceGetPortStatus);
   Particle.function(JUISE_INCOMING, juiceMessageCallback);
+  
+  // EEPROM debug functions
+  Particle.function("eepromStatus", eepromStatus);
+  Particle.function("eepromSave", eepromForceSave);
+  Particle.function("eepromClear", eepromClear);
+  Particle.function("portMsgTimes", getPortMessageTimes);
 
   Particle.variable("CAN_ERROR", CAN_ERROR);
   Particle.variable("pub_id", MANUAL_MODE, STRING);

@@ -14,6 +14,8 @@ const int VIN_LENGTH = 16;
 const int MAX_UNLOCK_RETRY = 3;
 // Port State Structure
 struct PortState {
+  unsigned long last_port_message =
+      0; // Last time this port sent a message successfully
   bool DID_PORT_CHECK = false;
   bool docked;            // Is port docked
   bool charging;          // Is port charging
@@ -47,21 +49,24 @@ struct PortState {
   bool unlock_successful;      // unlock success?
   bool charge_successful;      // charge success?
   bool heartbeat_success;
-  int unlock_retry_count; // Number of unlock retries attempted
+  int unlock_retry_count;  // Number of unlock retries attempted
   int vin_retry_count = 0; // Track VIN retries for backoff calculation
   unsigned long
       last_emergency_unlock_time; // Last time emergency unlock was sent
   // Security violation VIN retry fields
-  bool security_violation_retry_active = false; // Flag indicating we're in security violation retry mode
-  int security_vin_retry_count = 0; // Number of security VIN retries attempted (max 3)
-  unsigned long security_vin_retry_timer = 0; // Timer for 10-second intervals between security retries
-  char charge_varient;            // Current charge varient
-  char volts[3];                  // Port Voltage
-  char amps[3];                   // Port Amperage
-  bool fatal_NFC_error;           // WEEWOO
-  char temp[8];                   // port temperature in celsius
-  char fan_speed[4];              // PWM fan speed
-  char port_firmware_version[9];  // firmware version of the port
+  bool security_violation_retry_active =
+      false; // Flag indicating we're in security violation retry mode
+  int security_vin_retry_count =
+      0; // Number of security VIN retries attempted (max 3)
+  unsigned long security_vin_retry_timer =
+      0;               // Timer for 10-second intervals between security retries
+  char charge_varient; // Current charge varient
+  char volts[3];       // Port Voltage
+  char amps[3];        // Port Amperage
+  bool fatal_NFC_error;          // WEEWOO
+  char temp[8];                  // port temperature in celsius
+  char fan_speed[4];             // PWM fan speed
+  char port_firmware_version[9]; // firmware version of the port
 };
 
 // Global Port State
