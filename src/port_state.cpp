@@ -1,7 +1,7 @@
 #include "port_state.h"
 #include "Particle.h"
-#include "config.h"
 #include "cloud.h"
+#include "config.h"
 #include "utils.h"
 
 // Global port state variables
@@ -198,7 +198,7 @@ void setPortFirmwareVersion(int portNumber, const char *version) {
     safeStrCopy(port->port_firmware_version, version,
                 sizeof(port->port_firmware_version));
     Log.info("Port %d firmware version set to: %s\n", portNumber,
-                    port->port_firmware_version);
+             port->port_firmware_version);
   }
 }
 
@@ -274,32 +274,31 @@ void clearPortFlags(int portNumber) {
 char *getPortStatusRange(int startPort, int endPort) {
   static char buffer[512]; // Buffer for port status
   memset(buffer, 0, sizeof(buffer));
-
-  if (startPort < 1 || endPort > MAX_PORTS || startPort > endPort) {
-    Log.info("Invalid port range: %d-%d", startPort, endPort);
+  int start=startPort;
+  if (start == 0) {
+    start = 1;
+  }
+  if (start < 1 || endPort > MAX_PORTS || start > endPort) {
+    Log.info("Invalid port range: %d-%d", start, endPort);
     snprintf(buffer, sizeof(buffer), "P,0,ERROR");
     return buffer;
   }
 
-  // Start building the response: P,0,port:docked:charging,port:docked:charging,...
+  // Start building the response:
+  // P,0,port:docked:charging,port:docked:charging,...
   strcpy(buffer, "P,0");
 
-  for (int port = startPort; port <= endPort; port++) {
+  for (int port = start; port <= endPort; port++) {
     struct PortState *portState = getPortState(port);
     char portStatus[32]; // Individual port status
 
     if (portState) {
       // Format: ,port:docked:charging (1 for true, 0 for false)
-      snprintf(portStatus, sizeof(portStatus), 
-               ",%d:%d:%d",
-               port,
-               portState->docked ? 1 : 0,
-               portState->charging ? 1 : 0);
+      snprintf(portStatus, sizeof(portStatus), ",%d:%d:%d", port,
+               portState->docked ? 1 : 0, portState->charging ? 1 : 0);
     } else {
       // Invalid port - use 0 for both states
-      snprintf(portStatus, sizeof(portStatus), 
-               ",%d:0:0",
-               port);
+      snprintf(portStatus, sizeof(portStatus), ",%d:0:0", port);
     }
 
     // Check if adding this would exceed buffer size
@@ -311,6 +310,6 @@ char *getPortStatusRange(int startPort, int endPort) {
     }
   }
 
-  Log.info("Port status range %d-%d: %s", startPort, endPort, buffer);
+  Log.info("Port status range %d-%d: %s", start, endPort, buffer);
   return buffer;
 }

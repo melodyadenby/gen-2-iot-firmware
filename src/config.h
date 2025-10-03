@@ -5,8 +5,8 @@
 #include "Particle.h"
 
 // Version and Device Info
-#define BUILD_VERSION "Gen 1.0.7"
-#define PRODUCT_VERSION_NUM 45
+#define BUILD_VERSION "Gen 1.0.9"
+#define PRODUCT_VERSION_NUM 46
 
 // Time Conversion Constants
 const int MIN_TO_MS_MULTIPLIER = 60000;
@@ -19,7 +19,7 @@ const int HOUR_TO_MS_MULTIPLIER = 60 * MIN_TO_MS_MULTIPLIER;
 #define ENV_LOCAL 2
 
 // Set the current environment
-#define ENV ENV_LOCAL
+#define ENV ENV_PROD
 
 // Environment-specific Configuration
 #if ENV == ENV_QA

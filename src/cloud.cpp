@@ -19,7 +19,7 @@ bool portStatusRequestPending = false;
 unsigned long portStatusRequestTime = 0;
 bool portStatusWaitingForPoll = false;
 
-const unsigned long WAIT_TIME = PORT_CHECK_INTERVAL + (PORT_CHECK_INTERVAL / 2);
+const unsigned long WAIT_TIME = PORT_CHECK_INTERVAL /2;
 
 // Global message history for deduplication (MAX_PORTS + 1 for non-port messages
 // at index 0)

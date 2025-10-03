@@ -234,7 +234,7 @@ void PortEventHandler::handleStatusMessage(const ParsedCANMessage &message) {
     state->security_vin_retry_count = 0;
     state->security_vin_retry_timer = 0;
 
-    //one time unlock to reset vars
+    // one time unlock to reset vars
     char buffer[16];
     formatCloudMessage("U", "0", port, "1", buffer, sizeof(buffer));
     publishJuiseMessage(buffer);
@@ -414,13 +414,15 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
 
     // Only send to cloud if vehicle is not already charging (prevents cloud
     // spam on system restart) - unless this is a spontaneous VIN
+
+    // Uncomment below to always send VIN to cloud
     Log.info("Port %d - Setting flags for cloud transmission", port);
     state->send_vin_to_cloud_flag = true;
     state->awaiting_cloud_vin_resp = true;
     state->cloud_vin_resp_timer = millis();
     if (!state->charging) {
-      // Log.info("Port %d - Setting flags for cloud transmission",
-      // port); state->send_vin_to_cloud_flag = true;
+      // Log.info("Port %d - Setting flags for cloud transmission", port);
+      // state->send_vin_to_cloud_flag = true;
       // state->awaiting_cloud_vin_resp = true;
       // state->cloud_vin_resp_timer = millis();
     } else {
@@ -428,12 +430,7 @@ void PortEventHandler::handleVINMessage(const ParsedCANMessage &message) {
                "(already charging)",
                port);
     }
-  } else {
-    // Log.info("Port %d - PARTIAL VIN: %s (%d/%d chars)", port,
-    // state->VIN,
-    //                 strlen(state->VIN), VIN_LENGTH);
   }
-  // Log.info("=== END VIN DEBUG ===");
 }
 
 void PortEventHandler::handleTemperatureMessage(
@@ -526,7 +523,7 @@ void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
              message.chargeData.status == '1' ? "Charging" : "Not Charging");
     Log.info("⚡ chargeData: %c", message.chargeData.status);
     // Validate charge variant matches what we sent
-    if (message.chargeData.status == '1' ) {
+    if (message.chargeData.status == '1') {
       state->charge_successful = true;
       state->charging = true;
       state->check_charge_status = false;
@@ -535,8 +532,8 @@ void PortEventHandler::handleChargeMessage(const ParsedCANMessage &message) {
       state->charge_successful = false;
       state->check_charge_status = true;
     } else {
-      Log.info("Charge status unknown on port %d. Expected: %c, Got: %c",
-               port, message.chargeData.status);
+      Log.info("Charge status unknown on port %d. Expected: %c, Got: %c", port,
+               message.chargeData.status);
     }
 
     state->send_charge_flag = false;
